@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets and personal data (REQUIREMENTS §7): never commit
+.env
+*.key
+data/raw/
+data/private/
