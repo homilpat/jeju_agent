@@ -26,8 +26,16 @@ from pydantic import AwareDatetime, Field, field_validator, model_validator
 from jeju_lifepath.geo.graph import PedestrianGraph, UnknownEdgeError
 from jeju_lifepath.schemas.common import ClosureStatus, FrozenModel, NonEmptyStr, Passability
 from jeju_lifepath.schemas.edge import FEATURE_FIELDS, INDICATOR_FIELDS, Resolution, RoadEdge
+from jeju_lifepath.schemas.feature import FeatureValue
+from jeju_lifepath.schemas.source import DataQuality
 
-FeatureValue = float | Passability | ClosureStatus | None
+# Units of each RoadEdge feature field. Indicators are dimensionless [0,1]
+# indices whose meaning is defined by the producing analyser.
+FIELD_UNITS: Mapping[str, str] = {
+    **dict.fromkeys(INDICATOR_FIELDS, "index[0,1]"),
+    "accessibility": "PASS|BLOCK|UNKNOWN",
+    "closure_status": "OPEN|CLOSED|UNKNOWN",
+}
 
 
 class FeatureConflictError(ValueError):
@@ -43,7 +51,28 @@ class FeatureLayer(FrozenModel):
     source_ids: Annotated[tuple[NonEmptyStr, ...], Field(min_length=1)]
     observed_at: AwareDatetime | None = None
     resolution: Resolution = Resolution()
-    caveats: tuple[NonEmptyStr, ...] = ()
+    quality: DataQuality = DataQuality()
+
+    @property
+    def caveats(self) -> tuple[str, ...]:
+        return self.quality.caveats
+
+    @property
+    def unit(self) -> str:
+        return FIELD_UNITS[self.field]
+
+    def feature_value(self, edge_id: str) -> FeatureValue:
+        """Self-describing record for one edge (missing edges -> value None)."""
+        return FeatureValue(
+            edge_id=edge_id,
+            field=self.field,
+            value=self.values.get(edge_id),
+            unit=self.unit,
+            observed_at=self.observed_at,
+            resolution=self.resolution,
+            source_ids=self.source_ids,
+            quality=self.quality,
+        )
 
     @field_validator("field")
     @classmethod
@@ -67,7 +96,7 @@ class FeatureProvenance(FrozenModel):
     observed_at: AwareDatetime | None
     resolution: Resolution
     edge_count: int
-    caveats: tuple[NonEmptyStr, ...]
+    quality: DataQuality
 
 
 @runtime_checkable
@@ -134,7 +163,7 @@ def apply_feature_layers(
                 observed_at=layer.observed_at,
                 resolution=layer.resolution,
                 edge_count=len(layer.values),
-                caveats=layer.caveats,
+                quality=layer.quality,
             )
         )
     merged = [RoadEdge.model_validate(p) for p in payloads.values()]

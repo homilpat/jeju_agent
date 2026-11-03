@@ -11,7 +11,8 @@ from jeju_lifepath.geo.features import (
 )
 from jeju_lifepath.geo.graph import PedestrianGraph, UnknownEdgeError
 from jeju_lifepath.schemas import ClosureStatus, Passability, Resolution
-from tests.backend.fixtures.synthetic_grid import SYNTHETIC_SOURCE_ID, build_graph
+from jeju_lifepath.schemas.source import DataQuality
+from tests.backend.fixtures.synthetic.grid import SYNTHETIC_SOURCE_ID, build_graph
 
 KST = timezone(timedelta(hours=9))
 T1 = datetime(2026, 10, 1, tzinfo=KST)
@@ -56,7 +57,12 @@ def test_merge_values_provenance_and_freshness():
     )
     layers = [
         _layer(values={"A-B": 0.7}, observed_at=T2, resolution=Resolution(spatial="point")),
-        _layer("crime_context", {"A-B": 0.2}, observed_at=T1, caveats=["읍면동 단위 맥락"]),
+        _layer(
+            "crime_context",
+            {"A-B": 0.2},
+            observed_at=T1,
+            quality=DataQuality(caveats=("읍면동 단위 맥락",)),
+        ),
         _layer("closure_status", {"A-B": "CLOSED"}),
         _layer("accessibility", {"B-C": Passability.BLOCK}),
     ]
@@ -118,3 +124,15 @@ def test_layer_contract_validation():
         _layer(source_ids=[])
     with pytest.raises(ValidationError):
         _layer("accessibility", {"A-B": None})
+
+
+def test_feature_value_expansion_keeps_missing_as_none():
+    layer = _layer(values={"A-B": 0.7}, observed_at=T2)
+    present = layer.feature_value("A-B")
+    missing = layer.feature_value("D-E")
+    assert present.value == 0.7
+    assert present.unit == "index[0,1]"
+    assert not present.is_missing
+    assert missing.is_missing
+    assert missing.value is None
+    assert missing.source_ids == ("synthetic:cctv_index",)

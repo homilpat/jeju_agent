@@ -8,7 +8,7 @@ from jeju_lifepath.geo.graph import (
     UnknownEdgeError,
     UnknownNodeError,
 )
-from tests.backend.fixtures.synthetic_grid import (
+from tests.backend.fixtures.synthetic.grid import (
     NODES,
     SEGMENTS,
     build_edges,

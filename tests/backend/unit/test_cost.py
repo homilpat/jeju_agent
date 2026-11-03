@@ -10,7 +10,7 @@ from jeju_lifepath.routing.cost import (
     compute_edge_cost,
     compute_edge_costs,
 )
-from tests.backend.fixtures.synthetic_grid import build_graph, make_edge
+from tests.backend.fixtures.synthetic.grid import build_graph, make_edge
 
 ADV = IndicatorDirection.ADVERSE
 FAV = IndicatorDirection.FAVOURABLE

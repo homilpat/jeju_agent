@@ -17,7 +17,7 @@ from jeju_lifepath.schemas import (
     RouteResult,
     RouteStatus,
 )
-from tests.backend.fixtures.synthetic_grid import SYNTHETIC_SOURCE_ID, make_edge
+from tests.backend.fixtures.synthetic.grid import SYNTHETIC_SOURCE_ID, make_edge
 
 KST = timezone(timedelta(hours=9))
 
@@ -202,9 +202,11 @@ class TestRouteResult:
         ok = RouteResult(status=status, caveats=["no verified step-free route"])
         assert ok.length_m is None
 
-    def test_repeated_edges_rejected(self):
-        with pytest.raises(ValidationError):
-            RouteResult(status=RouteStatus.OK, route_edge_ids=["A-B", "A-B"], length_m=2.0)
+    def test_repeated_edges_allowed_at_schema_level(self):
+        # Out-and-back via a POI may reuse an edge; graph-level validation
+        # (validation.route) is responsible for continuity checks.
+        res = RouteResult(status=RouteStatus.OK, route_edge_ids=["A-B", "B-A"], length_m=2.0)
+        assert res.route_edge_ids == ("A-B", "B-A")
 
     def test_coverage_range(self):
         with pytest.raises(ValidationError):

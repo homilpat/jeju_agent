@@ -33,6 +33,8 @@ INDICATOR_FIELDS: tuple[str, ...] = (
     "activity_index",
     "traffic_exposure",
     "weather_exposure",
+    # D01: AP installation-location proximity only — never signal/continuity.
+    "wifi_proximity_index",
 )
 
 # Categorical status fields used by the constraint engine.
@@ -79,6 +81,7 @@ class RoadEdge(FrozenModel):
     activity_index: UnitInterval | None = None
     traffic_exposure: UnitInterval | None = None
     weather_exposure: UnitInterval | None = None
+    wifi_proximity_index: UnitInterval | None = None
 
     # Defaults are UNKNOWN: absence of evidence is not evidence of passability.
     accessibility: Passability = Passability.UNKNOWN

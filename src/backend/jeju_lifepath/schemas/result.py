@@ -3,7 +3,9 @@
 Status invariants (enforced at construction so no layer can emit a
 self-contradictory result):
 
-* OK / UNVERIFIED  -> non-empty, duplicate-free ``route_edge_ids`` and ``length_m > 0``.
+* OK / UNVERIFIED  -> non-empty ``route_edge_ids`` and ``length_m > 0``. An edge may
+  repeat (e.g. out-and-back to a POI on a dead end); continuity and repetition
+  are checked against the graph by ``validation.route``.
 * NO_FEASIBLE_ROUTE / DATA_UNAVAILABLE -> no edges, no length, no duration.
 * Any status other than OK must carry at least one caveat explaining why
   (e.g. UNKNOWN accessibility edges, missing data source).
@@ -37,8 +39,6 @@ class RouteResult(FrozenModel):
         if self.status in ROUTED_STATUSES:
             if not self.route_edge_ids:
                 raise ValueError(f"{self.status} requires a non-empty route_edge_ids")
-            if len(set(self.route_edge_ids)) != len(self.route_edge_ids):
-                raise ValueError("route_edge_ids must not repeat an edge")
             if self.length_m is None:
                 raise ValueError(f"{self.status} requires length_m")
         else:

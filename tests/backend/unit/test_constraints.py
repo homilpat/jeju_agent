@@ -15,7 +15,7 @@ from jeju_lifepath.schemas import (
     RoutePreference,
     RouteRequest,
 )
-from tests.backend.fixtures.synthetic_grid import build_graph
+from tests.backend.fixtures.synthetic.grid import build_graph
 
 STANDARD = ConstraintProfile()
 STEP_FREE = ConstraintProfile(requires_step_free=True)

@@ -15,7 +15,6 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
-from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -24,19 +23,23 @@ from pyproj import CRS
 from pyproj.exceptions import CRSError
 
 from jeju_lifepath.schemas.common import FrozenModel, NonEmptyStr, UnitInterval
+from jeju_lifepath.schemas.source import OFFICIAL_ORIGINS, DataOrigin
+
+__all__ = [
+    "OFFICIAL_ORIGINS",
+    "DataOrigin",
+    "DataRegistry",
+    "DatasetRecord",
+    "DatasetSpec",
+    "G1GateReport",
+    "IngestStats",
+    "PointColumnMapping",
+    "evaluate_g1_gate",
+    "sha256_file",
+]
 
 REGISTRY_SCHEMA_VERSION = 1
 DEFAULT_MIN_IN_REGION_RATIO = 0.95
-
-
-class DataOrigin(StrEnum):
-    OFFICIAL_JEJU = "OFFICIAL_JEJU"  # 제주특별자치도·제주데이터허브 등 제주 공식 기관
-    OFFICIAL_NATIONAL = "OFFICIAL_NATIONAL"  # 공공데이터포털 등 국가 공식 기관
-    COMMUNITY = "COMMUNITY"  # OpenStreetMap 등 공개 커뮤니티 데이터
-    SYNTHETIC = "SYNTHETIC"  # 테스트/시연용 가상 데이터 (DEMO 전용)
-
-
-OFFICIAL_ORIGINS = frozenset({DataOrigin.OFFICIAL_JEJU, DataOrigin.OFFICIAL_NATIONAL})
 
 DatasetId = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_\-]{2,63}$")]
 

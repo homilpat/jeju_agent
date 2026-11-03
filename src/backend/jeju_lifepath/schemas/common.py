@@ -17,6 +17,7 @@ from typing import Annotated, Any
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     PlainSerializer,
@@ -139,3 +140,15 @@ WGS84LineString = Annotated[
         }
     ),
 ]
+
+
+def coerce_point(value: Any) -> Any:
+    """Accept a (lat, lon) 2-tuple as documented shorthand for GeoPoint."""
+    if isinstance(value, (tuple, list)):
+        if len(value) != 2:  # noqa: PLR2004 - (lat, lon)
+            raise ValueError("coordinate tuple must be (lat, lon)")
+        return GeoPoint(lat=value[0], lon=value[1])
+    return value
+
+
+GeoPointInput = Annotated[GeoPoint, BeforeValidator(coerce_point)]
