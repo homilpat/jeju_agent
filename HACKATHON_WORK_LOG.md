@@ -42,3 +42,35 @@ RUF100 2건 발견 → 코드 수정으로 해결. Ruff formatter가 `docs/*.md`
 
 ### 다음 단계
 - G1 진행 가능 (G0 검증 통과). G1에서 데이터 레지스트리와 원본 확보·해시·라이선스 기록부터 시작.
+
+---
+
+## 2026-11-03 · G1 제주 공식 데이터 확보·전처리 — **진행 중 / 미통과**
+
+### 시도
+- 공식 데이터 접근 확인: `www.jejudatahub.net`, `www.data.go.kr`, `apis.data.go.kr`, `api.odcloud.kr`,
+  OSM 계열(`openstreetmap.org`, `overpass-api.de`, `download.geofabrik.de`) 모두 개발 환경 프록시에서
+  **CONNECT 403 (네트워크 정책 거부)**. 데이터를 확보하지 못함 → 가상 데이터로 대체하지 않음.
+
+### 수행 (데이터 비의존 부분)
+- 데이터 레지스트리, 로컬 CSV 커넥터(UTF-8/CP949), 좌표 정규화(pyproj, TM→WGS84), 결정론적 GeoJSON 산출,
+  해시 기반 G1 게이트 판정, CLI(`ingest`, `gate`).
+- 의존성 추가: `pyproj==3.8.0` (오프라인 좌표 변환).
+
+### 변경 파일
+- 신규: `src/backend/jeju_lifepath/data/{__init__,registry,connectors,normalize,ingest}.py`, `src/backend/jeju_lifepath/geo/regions.py`
+- 신규: `tests/backend/unit/test_data_pipeline.py`, `data/README.md`, `data/specs/.gitkeep`, `docs/DATA_SOURCES.md`
+- 수정: `pyproject.toml`, `.gitignore`(`data/processed/`), `docs/IMPLEMENTATION_STATUS.md`, `README.md`
+
+### 검증
+```
+python -m pytest        -> 129 passed
+ruff check .            -> All checks passed!
+ruff format --check .   -> 35 files already formatted
+gate CLI                -> G1 NOT PASSED: no dataset registered (exit 1)
+```
+중간 실패: Ruff PT018(복합 assert) 2건 → assert 분리로 수정.
+
+### 블로커
+- **공식 데이터 미확보** (네트워크 정책). 해결: 환경 Network access에 위 도메인 허용, 또는 원본 CSV 제공.
+- G2 이후 단계는 G1 통과 전까지 진행하지 않음.

@@ -12,4 +12,5 @@ dist/
 .env
 *.key
 data/raw/
+data/processed/
 data/private/

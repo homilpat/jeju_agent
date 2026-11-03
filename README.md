@@ -8,8 +8,8 @@
 - 구현 상태·게이트 기록: [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)
 - 작업 로그: [HACKATHON_WORK_LOG.md](HACKATHON_WORK_LOG.md)
 
-> **현재 단계: G0 (저장소·스키마·기본 테스트 환경) 완료.**
-> 공식 제주 데이터는 아직 확보·적용되지 않았다(G1 미착수). 테스트의 모든 그래프는
+> **현재 단계: G0 완료 · G1 진행 중(미통과).** 데이터 수집·검증 파이프라인은 구현됐지만
+> 공식 제주 데이터는 아직 확보·적용되지 않았다([data/README.md](data/README.md)). 테스트의 모든 그래프는
 > `synthetic:` 출처의 **DEMO용 가상 데이터**다. 경로 탐색 서비스·Agent·UI는 미구현이다.
 
 ## 저장소 구조 (모노레포)
@@ -20,7 +20,9 @@ src/
     schemas/                  # RoadEdge, RouteRequest, RouteResult, 공통 enum/좌표 타입
     geo/                      # PedestrianGraph, geodesy, 분석기(Feature) 인터페이스
     routing/                  # 통행 제약 엔진(B01), CA-MOR 비용 기반(B02 cost term)
+    data/                     # 데이터 레지스트리, CSV 커넥터, 좌표 정규화, ingest/G1 gate CLI
   frontend/                   # 지도·채팅 UI (G10, 미구현)
+data/                         # raw/·processed/(git 제외), specs/, registry.json
 tests/
   backend/{unit,fixtures}/    # 백엔드 테스트 + 가상 그래프 fixture
   frontend/                   # 프론트엔드 테스트 (G10, 미구현)
