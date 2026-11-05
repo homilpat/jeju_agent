@@ -1,4 +1,4 @@
-from jeju_lifepath.presentation.route import render_comparison, render_route
+from jeju_lifepath.presentation.route import START_NOTICE, render_comparison, render_route
 from jeju_lifepath.routing.optimizer import compare_routes, find_route
 from jeju_lifepath.schemas import RouteRequest
 
@@ -17,7 +17,7 @@ def test_route_text_content(two_way):
     assert "거리 약 220m" in text
     assert "CCTV 인접도 높음" in text
     assert "시연용 합성 데이터" in text
-    assert "안전을 보장하지 않습니다" in text
+    assert "보장" not in text  # 안전 안내는 첫 화면 한 번만
 
 
 def test_unverified_and_failure_text(toy_graph):
@@ -27,3 +27,8 @@ def test_unverified_and_failure_text(toy_graph):
         require_verified_accessibility=True,
     ))
     assert "찾지 못했습니다" in render_route(r)
+
+
+def test_start_notice_is_plain(assert_user_text):
+    assert_user_text(START_NOTICE)
+    assert "대리변수" not in START_NOTICE

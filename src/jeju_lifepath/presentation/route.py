@@ -2,6 +2,12 @@
 
 from jeju_lifepath.schemas import RouteResult, RouteStatus
 
+# 웹 첫 화면에 한 번만 띄우는 안내. 경로마다 반복하지 않는다.
+START_NOTICE = (
+    "안전환경 우선 경로는 CCTV·가로등이 설치된 위치를 참고해 고른 길입니다. "
+    "실제 안전을 보장하지는 않으니 참고용으로 이용해 주세요."
+)
+
 STATUS_TEXT = {
     RouteStatus.OK: "경로를 찾았습니다.",
     RouteStatus.UNVERIFIED: "경로를 찾았지만, 일부 구간은 통행 가능 여부가 확인되지 않았습니다.",

@@ -21,7 +21,6 @@ from jeju_lifepath.schemas import (
 MAX_CANDIDATES = 200
 WALK_M_PER_MIN = 75.0  # 4.5 km/h
 PREF_LABEL = {"SHORTEST": "최단", "BALANCED": "균형", "SAFETY": "안전환경 우선"}
-SAFETY_CAVEAT = "안전환경 지표는 시설 설치 위치 기반 대리변수이며 안전을 보장하지 않습니다."
 
 
 def _collapse(graph: nx.MultiDiGraph, pref: RoutePreference) -> nx.DiGraph:
@@ -95,8 +94,6 @@ def _result(
         caveats.append(
             f"통행 가능 여부가 확인되지 않은 구간 {len(unverified)}곳이 포함되어 있습니다."
         )
-    if req.route_preference is not RoutePreference.SHORTEST:
-        caveats.append(SAFETY_CAVEAT)
 
     breakdown = {
         name: _lw_mean(
