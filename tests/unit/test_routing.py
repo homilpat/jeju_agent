@@ -1,36 +1,13 @@
-import re
-
-import pytest
-
-from jeju_lifepath.geo.graph import build_graph
 from jeju_lifepath.routing.cost import adverse_score
 from jeju_lifepath.routing.optimizer import compare_routes, find_route
-from jeju_lifepath.schemas import RoadEdge, RouteRequest, RouteResult, RouteStatus
+from jeju_lifepath.schemas import RouteRequest, RouteResult, RouteStatus
 from jeju_lifepath.validation.route import validate_route
+
+from ..conftest import edge
 
 
 def req(o="A", d="D", pref="SHORTEST", **kw):
     return RouteRequest(origin=o, destination=d, route_preference=pref, **kw)
-
-
-def edge(eid, s, t, length, **kw):
-    kw.setdefault("accessibility", "PASS")
-    kw.setdefault("closure_status", "OPEN")
-    return RoadEdge(
-        edge_id=eid, source_node=s, target_node=t, geometry=[(0, 0), (1, 1)],
-        length_m=length, source_ids=["DEMO"], **kw,
-    )
-
-
-@pytest.fixture
-def two_way():
-    # S-X-T: 짧고 CCTV 없음 / S-Y-T: 10% 길고 CCTV 높음
-    return build_graph([
-        edge("sx", "S", "X", 100, cctv_index=0.0),
-        edge("xt", "X", "T", 100, cctv_index=0.0),
-        edge("sy", "S", "Y", 110, cctv_index=1.0),
-        edge("yt", "Y", "T", 110, cctv_index=1.0),
-    ])
 
 
 def test_block_and_closed_never_used(toy_graph):
@@ -105,15 +82,16 @@ def test_coordinates_not_supported_yet(toy_graph):
     assert r.status is RouteStatus.DATA_UNAVAILABLE
 
 
-def test_caveats_have_no_internal_values(toy_graph, two_way):
-    # 사용자 문구에 구간 ID, enum 이름, JSON 기호가 섞이면 안 된다
-    internal = re.compile(r"e_[A-Z]|\b(?:sx|xt|sy|yt)\b|[A-Z]{4,}|[{}\[\]]")
-    results = [
+def test_caveats_have_no_internal_values(toy_graph, two_way, assert_user_text):
+    for r in _all_results(toy_graph, two_way):
+        for c in r.caveats:
+            assert_user_text(c)
+
+
+def _all_results(toy_graph, two_way):
+    return [
         *compare_routes(toy_graph, req()).values(),
         *compare_routes(two_way, req("S", "T")).values(),
         find_route(toy_graph, req(o="B", require_verified_accessibility=True)),
         find_route(toy_graph, req(o=(126.5, 33.5))),
     ]
-    for r in results:
-        for c in r.caveats:
-            assert not internal.search(c), c
