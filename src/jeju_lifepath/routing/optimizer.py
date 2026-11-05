@@ -20,6 +20,7 @@ from jeju_lifepath.schemas import (
 
 MAX_CANDIDATES = 200
 WALK_M_PER_MIN = 75.0  # 4.5 km/h
+PREF_LABEL = {"SHORTEST": "최단", "BALANCED": "균형", "SAFETY": "안전환경 우선"}
 SAFETY_CAVEAT = "안전환경 지표는 시설 설치 위치 기반 대리변수이며 안전을 보장하지 않습니다."
 
 
@@ -40,7 +41,8 @@ def _path_edges(d: nx.DiGraph, nodes: list[str]) -> list[RoadEdge]:
 def find_route(graph: nx.MultiDiGraph, req: RouteRequest) -> RouteResult:
     if not isinstance(req.origin, str) or not isinstance(req.destination, str):
         return RouteResult(
-            status=RouteStatus.DATA_UNAVAILABLE, caveats=["좌표 스냅 미구현(G2 예정)"]
+            status=RouteStatus.DATA_UNAVAILABLE,
+            caveats=["좌표로 입력한 위치는 아직 경로 검색을 지원하지 않습니다."],
         )
     valid = filter_edges(graph, req)
     if req.origin not in valid or req.destination not in valid:
@@ -65,13 +67,13 @@ def find_route(graph: nx.MultiDiGraph, req: RouteRequest) -> RouteResult:
     if chosen is None:
         nodes = nx.shortest_path(shortest, req.origin, req.destination, "length")
         chosen = _path_edges(shortest, nodes)
-        caveats.append(f"후보 {MAX_CANDIDATES}개 내 상한 만족 경로 없음: 최단경로로 대체")
+        caveats.append("허용한 우회 범위 안에서 더 나은 경로를 찾지 못해 최단 경로를 안내합니다.")
     return _result(chosen, req, base_len, caveats)
 
 
 def _no_route(req: RouteRequest) -> RouteResult:
     msg = (
-        "검증된(PASS) 구간만으로 연결되는 경로가 없습니다."
+        "통행 가능이 확인된 구간만으로 연결되는 경로가 없습니다."
         if req.require_verified_accessibility
         else "통행 가능한 경로가 없습니다."
     )
@@ -90,7 +92,9 @@ def _result(
     length = sum(e.length_m for e in edges)
     unverified = [e.edge_id for e in edges if is_unverified(e)]
     if unverified:
-        caveats.append(f"접근성/폐쇄 미확인 구간 포함: {', '.join(unverified)}")
+        caveats.append(
+            f"통행 가능 여부가 확인되지 않은 구간 {len(unverified)}곳이 포함되어 있습니다."
+        )
     if req.route_preference is not RoutePreference.SHORTEST:
         caveats.append(SAFETY_CAVEAT)
 
@@ -111,6 +115,7 @@ def _result(
     return RouteResult(
         status=RouteStatus.UNVERIFIED if unverified else RouteStatus.OK,
         route_edge_ids=[e.edge_id for e in edges],
+        unverified_edge_ids=unverified,
         length_m=length,
         estimated_minutes=round(length / WALK_M_PER_MIN, 1),
         indicator_breakdown={
@@ -131,7 +136,7 @@ def compare_routes(graph: nx.MultiDiGraph, req: RouteRequest) -> dict[str, Route
         r = find_route(graph, req.model_copy(update={"route_preference": pref}))
         for other_pref, other in out.items():
             if r.route_edge_ids and r.route_edge_ids == other.route_edge_ids:
-                r.caveats.append(f"{other_pref} 경로와 동일")
+                r.caveats.append(f"{PREF_LABEL[other_pref]} 경로와 같습니다.")
                 break
         out[pref.value] = r
     return out

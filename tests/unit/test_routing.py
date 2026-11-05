@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from jeju_lifepath.geo.graph import build_graph
@@ -42,7 +44,7 @@ def test_unknown_edge_marks_unverified(toy_graph):
     r = find_route(toy_graph, req())
     assert r.route_edge_ids == ["e_AC", "e_CD"]
     assert r.status is RouteStatus.UNVERIFIED
-    assert any("e_CD" in c for c in r.caveats)
+    assert r.unverified_edge_ids == ["e_CD"]
 
 
 def test_verified_accessibility_is_pass_only(toy_graph):
@@ -74,7 +76,7 @@ def test_detour_cap_enforced(two_way):
 def test_compare_routes_marks_duplicates(toy_graph):
     out = compare_routes(toy_graph, req())
     assert set(out) == {"SHORTEST", "SAFETY", "BALANCED"}
-    assert any("SHORTEST 경로와 동일" in c for c in out["SAFETY"].caveats)
+    assert any("최단 경로와 같습니다" in c for c in out["SAFETY"].caveats)
 
 
 def test_deterministic(two_way):
@@ -101,3 +103,17 @@ def test_validator_catches_block_and_bad_ok(toy_graph):
 def test_coordinates_not_supported_yet(toy_graph):
     r = find_route(toy_graph, req(o=(126.5, 33.5)))
     assert r.status is RouteStatus.DATA_UNAVAILABLE
+
+
+def test_caveats_have_no_internal_values(toy_graph, two_way):
+    # 사용자 문구에 구간 ID, enum 이름, JSON 기호가 섞이면 안 된다
+    internal = re.compile(r"e_[A-Z]|\b(?:sx|xt|sy|yt)\b|[A-Z]{4,}|[{}\[\]]")
+    results = [
+        *compare_routes(toy_graph, req()).values(),
+        *compare_routes(two_way, req("S", "T")).values(),
+        find_route(toy_graph, req(o="B", require_verified_accessibility=True)),
+        find_route(toy_graph, req(o=(126.5, 33.5))),
+    ]
+    for r in results:
+        for c in r.caveats:
+            assert not internal.search(c), c
