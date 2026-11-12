@@ -76,5 +76,12 @@
 - 길 계산 자체는 어렵지 않음(다익스트라, 이미 최단거리 함수 있음). 핵심은 길에 붙일 데이터.
 - 진행: REQUIREMENTS.md(F1~F11) 작성 완료, POC 제작 시작.
 
+## POC 1차 구현 (2026-11-13)
+- 파일: poc/index.html·app.js·places.js, server.py(F11), scripts/fetch_osm.py → scripts/build_demo_graph.py → poc/data/graph.js.
+- 비용·통행 제약은 Python 엔진(cost.py·constraints.py)으로 미리 계산해 graph.js에 저장, 브라우저는 탐색만 함 (엔진 1개 유지).
+- 카카오 키가 없을 때(대시보드 iframe 등)는 OSM 길을 SVG로 그린 지도로 대신 표시.
+- 화장실·약국 위치 = OSM 실제 위치. 장소 좌표는 근사값, OSM에 같은 이름이 있으면 그 좌표 사용.
+- 이미지: Unsplash 제주 사진(Jay lee) + 작가 표기. Stitch 디자인 생성은 시간 초과로 결과 없음 → 같은 팔레트로 직접 구현.
+
 ## 미정
 - 미정: Muse Spark 1.3 API 엔드포인트·모델명 (코드 작성 시 확인 — 막히면 LLM 없이 경로만 동작하는 모드로 시연).

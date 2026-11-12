@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>제주 길안내 AI · 원도심</title>
+<style>
+  :root { --sea:#0b6e79; --sea-d:#07505a; --tang:#f28c28; --basalt:#2b2f33; --mute:#6b7378; --line:#e4e8ea; --bg:#f5f7f7;
+          --c-short:#2f6fdf; --c-safe:#14a06f; --c-bal:#f28c28; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:#dfe5e6; font-family:Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; color:var(--basalt); }
+  #app { position:relative; max-width:430px; height:100dvh; margin:0 auto; overflow:hidden; background:var(--bg); box-shadow:0 0 40px #0002; }
+  #map { position:absolute; inset:0; background:#eef2f1; }
+  #map svg { width:100%; height:100%; touch-action:none; cursor:grab; display:block; }
+
+  .top { position:absolute; top:12px; left:12px; right:12px; display:flex; gap:8px; align-items:center; z-index:5; }
+  .pill { flex:1; display:flex; align-items:center; gap:8px; background:#fff; border-radius:999px; padding:10px 14px; box-shadow:0 4px 14px #0002; font-size:14px; min-width:0; }
+  .pill b { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pill .arrow { color:var(--tang); font-weight:700; }
+  .dot { width:9px; height:9px; border-radius:50%; flex:none; }
+  .iconbtn { width:44px; height:44px; flex:none; border:0; border-radius:50%; background:#fff; box-shadow:0 4px 14px #0002; display:grid; place-items:center; cursor:pointer; }
+  .badge { position:absolute; top:66px; left:12px; z-index:5; background:var(--basalt); color:#fff; font-size:11px; font-weight:700; padding:4px 8px; border-radius:6px; letter-spacing:.3px; }
+  .attrib { position:absolute; left:8px; z-index:4; font-size:10px; color:#444; background:#fff9; padding:2px 6px; border-radius:4px; bottom:calc(var(--sheet-h, 52dvh) + 6px); transition:bottom .25s; }
+  .notice { position:absolute; top:96px; left:12px; right:12px; z-index:5; background:#fff4e5; border:1px solid #f6c48a; color:#8a4b00; font-size:12px; padding:8px 10px; border-radius:10px; }
+
+  .sheet { position:absolute; left:0; right:0; bottom:0; height:var(--sheet-h, 52dvh); background:#fff; border-radius:22px 22px 0 0; box-shadow:0 -6px 24px #0002; z-index:6; display:flex; flex-direction:column; transition:height .25s; }
+  .handle { padding:8px 0 4px; display:grid; place-items:center; cursor:pointer; border:0; background:none; width:100%; }
+  .handle span { width:40px; height:5px; border-radius:3px; background:#cfd6d8; }
+  .scroll { flex:1; overflow-y:auto; padding:4px 16px 8px; }
+
+  .hero { position:relative; border-radius:16px; overflow:hidden; height:120px; margin-bottom:12px; }
+  .hero img { width:100%; height:100%; object-fit:cover; display:block; }
+  .hero .cap { position:absolute; inset:auto 0 0 0; padding:24px 12px 8px; background:linear-gradient(transparent, #000a); color:#fff; }
+  .hero h1 { margin:0; font-size:18px; }
+  .hero p { margin:2px 0 0; font-size:12px; opacity:.9; }
+  .credit { position:absolute; top:6px; right:8px; font-size:9px; color:#fff; background:#0006; padding:2px 5px; border-radius:4px; }
+  .credit a { color:#fff; }
+
+  .cards { display:flex; gap:10px; overflow-x:auto; padding:2px 2px 10px; scroll-snap-type:x mandatory; }
+  .card { flex:0 0 78%; scroll-snap-align:start; border:2px solid var(--line); border-radius:16px; padding:12px; cursor:pointer; background:#fff; text-align:left; font:inherit; color:inherit; }
+  .card.on { border-color:var(--c); box-shadow:0 4px 14px #0001; }
+  .card .t { display:flex; align-items:center; gap:6px; font-weight:700; font-size:14px; }
+  .card .t .rec { margin-left:auto; font-size:10px; background:var(--c); color:#fff; padding:2px 6px; border-radius:6px; }
+  .card .big { font-size:22px; font-weight:800; margin:6px 0 2px; }
+  .card .big small { font-size:13px; font-weight:600; color:var(--mute); margin-left:6px; }
+  .card .tag { font-size:12px; color:var(--mute); }
+  .card .warn { font-size:11px; color:#a35c00; margin-top:4px; }
+  .card details { margin-top:6px; font-size:11px; color:var(--mute); }
+  .card details summary { cursor:pointer; color:var(--sea); font-weight:600; }
+  .card details p { margin:4px 0 0; line-height:1.5; }
+  .empty { font-size:13px; color:var(--mute); padding:8px 2px 12px; }
+
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  .chip { border:1px solid var(--line); background:#fff; border-radius:999px; padding:7px 12px; font-size:13px; cursor:pointer; font:inherit; font-size:13px; color:inherit; }
+  .chip[aria-pressed="true"] { background:var(--sea); color:#fff; border-color:var(--sea); }
+  .chip.place { background:var(--bg); border-color:transparent; }
+
+  .log { display:flex; flex-direction:column; gap:8px; margin-bottom:6px; }
+  .msg { max-width:86%; padding:9px 12px; border-radius:16px; font-size:14px; line-height:1.45; white-space:pre-line; }
+  .msg.ai { background:#e8f3f4; border-top-left-radius:4px; align-self:flex-start; }
+  .msg.me { background:var(--tang); color:#fff; border-top-right-radius:4px; align-self:flex-end; }
+  .msg .chips { margin:8px 0 0; }
+
+  form.ask { display:flex; gap:8px; padding:8px 12px calc(10px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); }
+  form.ask input { flex:1; border:1px solid var(--line); border-radius:999px; padding:11px 14px; font:inherit; font-size:14px; background:var(--bg); }
+  form.ask button { width:44px; height:44px; border:0; border-radius:50%; background:var(--sea); display:grid; place-items:center; cursor:pointer; }
+
+  .mk { font:600 11px/1 sans-serif; padding:5px 8px; border-radius:999px; color:#fff; background:var(--basalt); white-space:nowrap; box-shadow:0 2px 6px #0003; transform:translateY(-6px); }
+  .mk.start { background:var(--sea); } .mk.end { background:var(--tang); }
+  .mk.toilets, .mk.pharmacy { background:#fff; color:var(--basalt); border:1.5px solid var(--sea); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map" data-feature="F1"></div>
+
+  <div class="top">
+    <div class="pill" data-feature="F2">
+      <span class="dot" style="background:var(--sea)"></span><b id="from">동문시장</b>
+      <span class="arrow">→</span>
+      <span class="dot" style="background:var(--tang)"></span><b id="to">목적지를 말해 주세요</b>
+    </div>
+    <button class="iconbtn" id="locate" data-feature="F2" aria-label="현재 위치를 출발지로" title="현재 위치">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0b6e79" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+    </button>
+  </div>
+  <div class="badge" data-feature="F8">DEMO 데이터</div>
+  <div class="notice" id="notice" hidden></div>
+  <div class="attrib" data-feature="F1">© OpenStreetMap contributors<span id="kakaoAttr"></span></div>
+
+  <section class="sheet" id="sheet">
+    <button class="handle" id="handle" aria-label="시트 접기/펴기"><span></span></button>
+    <div class="scroll" id="scroll">
+      <div class="hero" id="hero">
+        <img src="https://images.unsplash.com/photo-1768791214149-c76a9b01d65d?ixlib=rb-4.1.0&w=900&h=300&fit=crop&q=75&fm=jpg" alt="제주시 해안 도심 풍경">
+        <span class="credit">Photo by <a href="https://unsplash.com/@cronos449?utm_source=jeju_poc&utm_medium=referral" target="_blank" rel="noopener">Jay lee</a> on <a href="https://unsplash.com/?utm_source=jeju_poc&utm_medium=referral" target="_blank" rel="noopener">Unsplash</a></span>
+        <div class="cap"><h1>제주 원도심 길안내 AI</h1><p>안전환경 · 최단 · 균형, 세 가지 길을 비교해 드려요</p></div>
+      </div>
+
+      <div class="cards" id="cards" data-feature="F5"></div>
+
+      <div class="chips" id="toggles">
+        <button class="chip" id="wc" aria-pressed="false" data-feature="F6">♿ 휠체어</button>
+        <button class="chip" id="fToilet" aria-pressed="false" data-feature="F7">🚻 화장실</button>
+        <button class="chip" id="fPharm" aria-pressed="false" data-feature="F7">💊 약국</button>
+        <button class="chip" id="gap" aria-pressed="false" data-feature="F9">시설 공백</button>
+      </div>
+
+      <div class="log" id="log" data-feature="F3"></div>
+    </div>
+    <form class="ask" id="ask" data-feature="F3">
+      <input id="q" autocomplete="off" placeholder="예: 관덕정까지 안전한 길 알려줘" aria-label="질문 입력">
+      <button aria-label="보내기"><svg width="20" height="20" viewBox="0 0 24 24" fill="#fff"><path d="M3 20l18-8L3 4v6l12 2-12 2z"/></svg></button>
+    </form>
+  </section>
+</div>
+
+<script src="config.js"></script>
+<script src="places.js"></script>
+<script src="data/graph.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
