@@ -75,6 +75,7 @@
 - 카카오 경로를 받아도 우리 기준(안전환경·와이파이·휠체어 PASS·폐쇄 구간)을 반영할 수 없음 → 우리 엔진이 직접 계산해야 함.
 - 길 계산 자체는 어렵지 않음(다익스트라, 이미 최단거리 함수 있음). 핵심은 길에 붙일 데이터.
 - 진행: REQUIREMENTS.md(F1~F11) 작성 완료, POC 제작 시작.
+- 재확인(사용자 재질문): 지도 위에 자체 길 그래프로 경로를 그리는 방식이 일반적인 구조임. 대안인 TMAP 보행자 경로 API는 걸어가는 길을 주지만, 우리 기준(안전환경·휠체어·폐쇄 구간)을 반영할 수 없어 쓰지 않음. 현재 방식 유지.
 
 ## POC 1차 구현 (2026-11-13)
 - 파일: poc/index.html·app.js·places.js, server.py(F11), scripts/fetch_osm.py → scripts/build_demo_graph.py → poc/data/graph.js.

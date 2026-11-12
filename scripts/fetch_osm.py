@@ -22,7 +22,7 @@ QUERY = f"""
   nwr["name"]["leisure"~"^(park)$"]{BBOX};
   nwr["name"]["shop"="mall"]{BBOX};
 );
-out geom tags;
+out body geom;
 """
 
 if __name__ == "__main__":
