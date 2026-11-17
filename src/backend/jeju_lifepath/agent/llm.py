@@ -33,8 +33,8 @@ SYSTEM_PROMPT = """너는 제주 도보 여행 도우미의 요청 해석기다.
  "unsupported_features": [문자열]}
 규칙: guide=근처 시설·장소 설명 조회, route=두 장소 사이 걷는 길, plan_create=여러 곳을 들르는 일정 만들기,
 plan_modify=이미 있는 일정 고치기, chat=인사·잡담, unsupported=차량·예약·결제처럼 제공하지 않는 일.
-location_text·destination_text·place_query에는 고유한 지명·가게 이름만 넣는다. '약국', '카페', '근처', '여기'처럼
-종류나 위치를 가리키는 말은 넣지 않는다(종류는 facility·themes, '근처·여기'는 use_current_location).
+location_text·destination_text·place_query에는 고유명사(특정 지명·가게 이름)만 넣는다.
+장소의 종류는 facility·themes에, 사용자의 현재 위치를 가리키는 말은 use_current_location에 넣는다.
 문장에 없는 지명·장소를 만들지 마라. 시각은 출력하지 마라. 모르면 null."""
 
 
