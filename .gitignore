@@ -22,3 +22,6 @@ graphy-out/
 # Daker 배포 제한 자료 (커밋 금지)
 /*.xlsx
 node_modules/
+
+# 개인 도구 설정
+.serena/
