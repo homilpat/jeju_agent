@@ -15,6 +15,7 @@ import networkx as nx
 import shapely
 from pyproj import Transformer
 from shapely.geometry import LineString, Point
+from shapely.ops import substring
 
 from jeju_lifepath.geo.geodesy import haversine_m
 
@@ -36,6 +37,7 @@ NOT_WALK = frozenset(
 FOOT_YES = frozenset({"yes", "designated", "permissive"})
 # 미터 단위 계산용: 한국 통합좌표계(UTM-K)
 _TO_M = Transformer.from_crs("EPSG:4326", "EPSG:5179", always_xy=True)
+_TO_LONLAT = Transformer.from_crs("EPSG:5179", "EPSG:4326", always_xy=True)
 
 
 def is_walkable(tags: dict[str, str]) -> bool:
@@ -57,6 +59,7 @@ class Segment:
     v: str
     coords: tuple[tuple[float, float], ...]  # (lon, lat)
     length_m: float
+    steps: bool = False  # highway=steps: 계단이 확인된 구간(휠체어·유모차 차단)
 
 
 def build_segments(elements: list[dict]) -> list[Segment]:
@@ -77,20 +80,46 @@ def build_segments(elements: list[dict]) -> list[Segment]:
     for w in ways:
         nodes = w["nodes"]
         pts = [(p["lon"], p["lat"]) for p in w["geometry"]]
-        start, k = 0, 0
+        steps = w["tags"].get("highway") == "steps"
+
+        k = 0
+
+        # 기본 인자: 반복 변수를 이번 도로 값으로 묶어 둠(루프 안에서 바로 호출)
+        def emit(a: int, b: int, w=w, nodes=nodes, pts=pts, steps=steps) -> None:  # noqa: PLR0917
+            nonlocal k
+            piece = tuple(pts[a : b + 1])
+            length = sum(haversine_m(*p, *q) for p, q in pairwise(piece))
+            if length > 0:
+                segments.append(
+                    Segment(f"osm{w['id']}_{k}", str(nodes[a]), str(nodes[b]), piece, length, steps)
+                )
+                k += 1
+
+        start = 0
         for i in range(1, len(nodes)):
             if i == len(nodes) - 1 or use[nodes[i]] > 1:
-                piece = tuple(pts[start : i + 1])
-                length = sum(haversine_m(*a, *b) for a, b in pairwise(piece))
-                if length > 0 and nodes[start] != nodes[i]:
-                    segments.append(
-                        Segment(
-                            f"osm{w['id']}_{k}", str(nodes[start]), str(nodes[i]), piece, length
-                        )
-                    )
-                    k += 1
+                if nodes[start] != nodes[i]:
+                    emit(start, i)
+                elif i - start >= 2:  # noqa: PLR2004 - 닫힌 고리: 가운데 노드에서 한 번 더 나눠 두 구간으로 보존
+                    mid = (start + i) // 2
+                    emit(start, mid)
+                    emit(mid, i)
                 start = i
     return segments
+
+
+def add_base_edge(g: nx.Graph, u: str, v: str, length: float, steps: bool) -> bool:
+    """기준 거리 그래프에 구간을 넣는다. 같은 두 노드 사이 평행 구간은 짧은 값만 남긴다
+    (실제 탐색은 잘라낸 망에서 평행 구간을 모두 씀). length=모든 구간 중 최소,
+    flat=계단 아닌 구간 중 최소(계단을 못 가는 사람의 기준 거리용). 새 간선을 만들었으면 True."""
+    data = g.get_edge_data(u, v)
+    if data is None:
+        g.add_edge(u, v, length=length, flat=None if steps else length)
+        return True
+    data["length"] = min(data["length"], length)
+    if not steps:
+        data["flat"] = length if data["flat"] is None else min(data["flat"], length)
+    return False
 
 
 @dataclass(frozen=True)
@@ -106,10 +135,7 @@ class WalkNetwork:
         self.by_id = {s.seg_id: s for s in segments}
         self.graph = nx.Graph()
         for s in segments:
-            # 같은 두 노드 사이 평행 구간은 짧은 것만 길이 그래프에 둔다
-            # (기준 거리 계산용, 실제 탐색은 잘라낸 망에서 전부 씀)
-            if not self.graph.has_edge(s.u, s.v) or self.graph[s.u][s.v]["length"] > s.length_m:
-                self.graph.add_edge(s.u, s.v, length=s.length_m)
+            add_base_edge(self.graph, s.u, s.v, s.length_m, s.steps)
         self.node_lonlat = {}
         for s in segments:
             self.node_lonlat[s.u] = s.coords[0]
@@ -121,6 +147,19 @@ class WalkNetwork:
     def _to_m_line(coords) -> LineString:
         xs, ys = _TO_M.transform([c[0] for c in coords], [c[1] for c in coords])
         return LineString(zip(xs, ys, strict=True))
+
+    def cut(self, seg: Segment, fractions: list[float]) -> list[tuple[tuple[float, float], ...]]:
+        """구간을 길이 비율(미터 기준, 스냅과 같은 기준) 지점들에서 잘라 위경도 좌표 조각들로."""
+        line = self._to_m_line(seg.coords)
+        stops = [0.0, *fractions, 1.0]
+        out = []
+        for a, b in pairwise(stops):
+            xs, ys = zip(*substring(line, a, b, normalized=True).coords, strict=True)
+            lon, lat = _TO_LONLAT.transform(xs, ys)
+            out.append(list(zip(lon, lat, strict=True)))
+        # 좌표 변환을 오가며 생기는 미세 오차 없이 원래 끝 노드와 정확히 이어지게
+        out[0][0], out[-1][-1] = seg.coords[0], seg.coords[-1]
+        return [tuple(p) for p in out]
 
     @classmethod
     def from_file(cls, path: Path) -> WalkNetwork:

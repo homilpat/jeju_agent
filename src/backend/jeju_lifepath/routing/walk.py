@@ -19,13 +19,20 @@ from pathlib import Path
 import networkx as nx
 import shapely
 from shapely.geometry import LineString, box, shape
-from shapely.ops import substring
 
 from jeju_lifepath.geo.geodesy import haversine_m
 from jeju_lifepath.geo.graph import PedestrianGraph
-from jeju_lifepath.geo.osm import _TO_M, SOURCE_ID, Segment, Snap, WalkNetwork
+from jeju_lifepath.geo.osm import _TO_M, SOURCE_ID, Snap, WalkNetwork, add_base_edge
+from jeju_lifepath.routing.constraints import DEFAULT_MOBILITY_POLICIES
 from jeju_lifepath.routing.optimizer import compare_routes
-from jeju_lifepath.schemas import MobilityProfile, RoadEdge, RouteRequest, RouteResult, RouteStatus
+from jeju_lifepath.schemas import (
+    MobilityProfile,
+    Passability,
+    RoadEdge,
+    RouteRequest,
+    RouteResult,
+    RouteStatus,
+)
 from jeju_lifepath.schemas.common import RoutePreference
 from jeju_lifepath.schemas.request import DETOUR_RATIO_POLICY_MAX
 from jeju_lifepath.validation.route import validate_route
@@ -100,18 +107,11 @@ class _Piece:
     u: str
     v: str
     coords: tuple[tuple[float, float], ...]
+    steps: bool = False
 
 
 def _length(coords) -> float:
     return sum(haversine_m(*a, *b) for a, b in pairwise(coords))
-
-
-def _split(seg: Segment, fraction: float) -> tuple[tuple, tuple, tuple[float, float]]:
-    line = LineString(seg.coords)
-    point = line.interpolate(fraction, normalized=True)
-    a = substring(line, 0, fraction, normalized=True)
-    b = substring(line, fraction, 1, normalized=True)
-    return tuple(a.coords), tuple(b.coords), (point.x, point.y)
 
 
 class WalkRouter:
@@ -127,14 +127,14 @@ class WalkRouter:
             return seg.u, [], seg.coords[0]
         if (1 - snap.fraction) * seg.length_m <= END_MERGE_M:
             return seg.v, [], seg.coords[-1]
-        a, b, at = _split(seg, snap.fraction)
+        a, b = self.net.cut(seg, [snap.fraction])
         return (
             name,
             [
-                _Piece(f"{seg.seg_id}~{name}a", seg.u, name, a),
-                _Piece(f"{seg.seg_id}~{name}b", name, seg.v, b),
+                _Piece(f"{seg.seg_id}~{name}a", seg.u, name, a, seg.steps),
+                _Piece(f"{seg.seg_id}~{name}b", name, seg.v, b, seg.steps),
             ],
-            at,
+            a[-1],
         )
 
     def plan(
@@ -148,20 +148,20 @@ class WalkRouter:
         if so is None or sd is None:
             return RoutePlan(_unavailable(MSG_NOT_NEAR_ROAD))
         snaps = (so.distance_m, sd.distance_m)
+        same = so.segment.seg_id == sd.segment.seg_id
+        if same and abs(so.fraction - sd.fraction) * so.segment.length_m <= END_MERGE_M:
+            return RoutePlan(_unavailable(MSG_TOO_CLOSE), *snaps)
         o_node, o_pieces, o_at = self._attach(so, ORIGIN)
         d_node, d_pieces, d_at = self._attach(sd, DESTINATION)
-        if so.segment.seg_id == sd.segment.seg_id and o_pieces and d_pieces:
+        if same and o_pieces and d_pieces:
             # 같은 구간에 둘 다 붙으면 그 구간을 세 조각으로 나눈다
             seg = so.segment
             f1, f2 = sorted((so.fraction, sd.fraction))
             n1, n2 = (ORIGIN, DESTINATION) if so.fraction <= sd.fraction else (DESTINATION, ORIGIN)
-            line = LineString(seg.coords)
-            parts = [
-                substring(line, x, y, normalized=True) for x, y in ((0, f1), (f1, f2), (f2, 1))
-            ]
+            parts = self.net.cut(seg, [f1, f2])
             ends = [(seg.u, n1), (n1, n2), (n2, seg.v)]
             o_pieces = [
-                _Piece(f"{seg.seg_id}~{i}", u, v, tuple(p.coords))
+                _Piece(f"{seg.seg_id}~{i}", u, v, p, seg.steps)
                 for i, ((u, v), p) in enumerate(zip(ends, parts, strict=True))
             ]
             d_pieces = []
@@ -173,7 +173,8 @@ class WalkRouter:
             sd.segment.seg_id if d_pieces else None,
         } - {None}
 
-        baseline = self._baseline(o_node, d_node, pieces)
+        step_free = DEFAULT_MOBILITY_POLICIES[mobility].requires_step_free
+        baseline = self._baseline(o_node, d_node, pieces, step_free)
         if baseline is None:
             return RoutePlan(_unavailable(MSG_NOT_CONNECTED), *snaps)
         limit = baseline * (1 + DETOUR_RATIO_POLICY_MAX)
@@ -197,16 +198,18 @@ class WalkRouter:
             routes[pref] = PlannedRoute(res, self._line(graph, res))
         return RoutePlan(routes, *snaps)
 
-    def _baseline(self, o: str, d: str, pieces: list[_Piece]) -> float | None:
+    def _baseline(self, o: str, d: str, pieces: list[_Piece], step_free: bool) -> float | None:
+        """전체망 최단 거리. 계단을 못 가는 사람은 계단 구간을 뺀 거리
+        (타원이 그 사람의 경로를 덮도록)."""
         g = self.net.graph
+        key = "flat" if step_free else "length"
         with self._lock:
             added = []
             for p in pieces:
-                if not g.has_edge(p.u, p.v):
-                    g.add_edge(p.u, p.v, length=_length(p.coords))
+                if add_base_edge(g, p.u, p.v, _length(p.coords), p.steps):
                     added.append((p.u, p.v))
             try:
-                return nx.shortest_path_length(g, o, d, weight="length")
+                return nx.shortest_path_length(g, o, d, weight=lambda _u, _v, e: e[key])
             except (nx.NetworkXNoPath, nx.NodeNotFound):
                 return None
             finally:
@@ -234,7 +237,7 @@ class WalkRouter:
                 t <= limit * 1.01 + 1.0
                 for t in _dist_sum(self.net._lines_m[int(i)], ox, oy, dx, dy)
             ):
-                out.append(_Piece(s.seg_id, s.u, s.v, s.coords))
+                out.append(_Piece(s.seg_id, s.u, s.v, s.coords, s.steps))
         return out
 
     def _edges(self, pieces: list[_Piece]) -> list[RoadEdge]:
@@ -259,6 +262,8 @@ class WalkRouter:
                         geometry=list(coords),
                         length_m=length,
                         traffic_exposure=exposure,
+                        # 계단은 확인된 장벽, 나머지는 확인 안 됨(일반 보행자에겐 둘 다 통과)
+                        accessibility=Passability.BLOCK if p.steps else Passability.UNKNOWN,
                         source_ids=sources,
                     )
                 )

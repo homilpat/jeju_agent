@@ -215,7 +215,7 @@ function KakaoMap({ points, lines = [] }) {
   const pointsKey =
     points.map((p) => [p.key, p.number, p.lat, p.lon, p.name].join(":")).join("|") +
     "#" +
-    lines.map((l) => `${l.key}:${l.kind}:${l.path.length}`).join("|");
+    lines.map((l) => `${l.key}:${l.kind}:${l.path.join(";")}`).join("|");
 
   useEffect(() => {
     let alive = true;
@@ -596,6 +596,8 @@ function Editor({ plannerId, onBack, onTravel }) {
   const [routeIndex, setRouteIndex] = useState(0); // 경로 비교 창을 연 구간
   // 구간(앞 장소>뒤 장소) -> 서버가 계산한 세 경로. 저장하지 않고 열 때마다 다시 계산한다
   const [plans, setPlans] = useState({});
+  const [planErrors, setPlanErrors] = useState({});
+  const inflight = useRef(new Set());
 
   useEffect(() => {
     api
@@ -690,6 +692,21 @@ function Editor({ plannerId, onBack, onTravel }) {
     const route = plans[segKey(i)]?.routes.find((r) => r.kind === kind);
     return route?.found ? [{ key: segKey(i), kind, path: route.line }] : [];
   });
+  // 위치를 아는 구간은 바로 계산해 둔다(다시 열었을 때도 고른 경로선이 보이게). 경로는 저장하지 않는다
+  useEffect(() => {
+    (planner?.places || []).slice(0, -1).forEach((_, i) => {
+      const key = segKey(i);
+      const [from, to] = [where(planner.places[i]), where(planner.places[i + 1])];
+      if (!from || !to || plans[key] || planErrors[key] || inflight.current.has(key)) return;
+      inflight.current.add(key);
+      api
+        .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon })
+        .then((plan) => setPlans((all) => ({ ...all, [key]: plan })))
+        .catch((e) => setPlanErrors((all) => ({ ...all, [key]: e.message })))
+        .finally(() => inflight.current.delete(key));
+    });
+  }); // 렌더마다 확인하지만 이미 계산했거나 계산 중인 구간은 건너뜀
+
   const notFound = (planner?.places || []).some((p) => p.source === "kakao" && coords[p.ref] === null);
 
   if (!planner) {
@@ -830,7 +847,10 @@ function Editor({ plannerId, onBack, onTravel }) {
           from={where(planner.places[routeIndex])}
           to={where(planner.places[routeIndex + 1])}
           plan={plans[segKey(routeIndex)]}
-          onPlan={(plan) => setPlans((all) => ({ ...all, [segKey(routeIndex)]: plan }))}
+          error={planErrors[segKey(routeIndex)]}
+          onRetry={() =>
+            setPlanErrors(({ [segKey(routeIndex)]: _, ...rest }) => rest)
+          }
           active={planner.route_choices[routeIndex] || DEFAULT_ROUTE}
           onChoose={(key) =>
             update({ route_choices: planner.route_choices.map((c, i) => (i === routeIndex ? key : c)) })
@@ -949,21 +969,8 @@ function SearchSheet({ added, full, onAdd, onClose }) {
   );
 }
 
-function RoutesSheet({ index, from, to, plan, onPlan, active, onChoose, onClose }) {
-  const [error, setError] = useState("");
+function RoutesSheet({ index, from, to, plan, error, onRetry, active, onChoose, onClose }) {
   const ready = from && to;
-
-  useEffect(() => {
-    if (!ready || plan) return;
-    let alive = true;
-    api
-      .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon })
-      .then((p) => alive && onPlan(p))
-      .catch((e) => alive && setError(e.message));
-    return () => {
-      alive = false;
-    };
-  }, [ready, plan]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <SheetFrame onClose={onClose} tall>
@@ -975,6 +982,11 @@ function RoutesSheet({ index, from, to, plan, onPlan, active, onChoose, onClose 
       </div>
       {!ready && <p className="empty-note">장소 위치를 아직 불러오지 못했어요. 잠시 후 다시 열어 주세요.</p>}
       <FormError message={error} />
+      {error && (
+        <button className="secondary-button" onClick={onRetry}>
+          다시 계산하기
+        </button>
+      )}
       {ready && !plan && !error && <p className="result-count">길을 계산하고 있어요. 처음에는 조금 걸려요…</p>}
       {plan && (
         <>
@@ -1183,7 +1195,7 @@ export default function App() {
           username={username}
           hasTrip={Boolean(trip)}
           onNavigate={setScreen}
-          onLogout={() => logout}
+          onLogout={logout}
         />
       )}
       <div className="phone-frame">
@@ -1213,7 +1225,7 @@ export default function App() {
               setPlannerId(id);
               setScreen("editor");
             }}
-            onLogout={() => logout}
+            onLogout={logout}
             onAccountDeleted={signedOut}
           />
         )}

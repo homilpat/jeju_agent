@@ -9,7 +9,7 @@ from jeju_lifepath.routing.walk import (
     AccidentZones,
     WalkRouter,
 )
-from jeju_lifepath.schemas import RouteStatus
+from jeju_lifepath.schemas import MobilityProfile, RouteStatus
 from jeju_lifepath.schemas.common import RoutePreference
 from tests.backend.fixtures.user_text import assert_user_text
 
@@ -108,3 +108,64 @@ def test_render_plan_is_user_text_only(router):
     assert "osm" not in " ".join(texts)
     assert out["comparison"] == ["사고 다발 구역을 지나는 비율은 최단 경로가 가장 높습니다."]
     assert [r["kind"] for r in out["routes"]] == ["SHORTEST", "BALANCED", "SAFETY"]
+
+
+def test_same_interior_point_is_too_close(router):
+    p = (LON + 0.0005, LAT)
+    plan = router.plan(p, (LON + 0.0005, LAT + 0.00002))  # 같은 지점으로 붙는 두 좌표
+    assert plan.routes[RoutePreference.SHORTEST].result.caveats == (MSG_TOO_CLOSE,)
+
+
+def test_closed_loop_way_is_kept():
+    NODES.update(
+        {20: (LON, LAT - 0.001), 21: (LON + 0.001, LAT - 0.001), 22: (LON + 0.0005, LAT - 0.0015)}
+    )
+    loop = way(30, [20, 21, 22, 20])
+    segs = build_segments([loop])
+    assert len(segs) == 2
+    assert {segs[0].u, segs[-1].v} == {"20"}
+
+
+def test_snap_on_bent_segment_uses_metres():
+    # 동쪽 100m 남짓 간 뒤 북쪽으로 꺾이는 길: 미터 기준 가운데는 꺾이는 모서리 근처
+    NODES.update(
+        {
+            40: (LON + 0.1, LAT),
+            41: (LON + 0.1 + 100 / 92_900, LAT),
+            42: (LON + 0.1 + 100 / 92_900, LAT + 100 / 110_900),
+            43: (LON + 0.09, LAT),
+        }
+    )
+    net = WalkNetwork(build_segments([way(50, [40, 41, 42]), way(51, [40, 43])]))
+    r = WalkRouter(net, None)
+    corner = NODES[41]
+    plan = r.plan((corner[0] + 0.0002, corner[1] - 0.0002), NODES[40])  # 모서리 바로 바깥
+    line = plan.routes[RoutePreference.SHORTEST].line
+    assert line[0] == pytest.approx((corner[1], corner[0]), abs=2e-6)
+
+
+def test_stroller_avoids_confirmed_stairs():
+    NODES.update(
+        {
+            60: (LON + 0.3, LAT),
+            61: (LON + 0.301, LAT),
+            62: (LON + 0.3, LAT + 0.0003),
+            63: (LON + 0.301, LAT + 0.0003),
+        }
+    )
+    elements = [
+        way(70, [60, 61], highway="steps"),
+        way(71, [60, 62]),
+        way(72, [62, 63]),
+        way(73, [63, 61]),
+    ]
+    r = WalkRouter(WalkNetwork(build_segments(elements)), None)
+    walk = r.plan(NODES[60], NODES[61]).routes[RoutePreference.SHORTEST].result
+    stroller = (
+        r.plan(NODES[60], NODES[61], MobilityProfile.STROLLER)
+        .routes[RoutePreference.SHORTEST]
+        .result
+    )
+    assert walk.length_m == pytest.approx(0.001 * 92_900, rel=0.02)  # 일반 보행은 계단으로 바로
+    assert stroller.length_m > walk.length_m  # 유모차는 계단을 돌아감
+    assert stroller.status is RouteStatus.UNVERIFIED
