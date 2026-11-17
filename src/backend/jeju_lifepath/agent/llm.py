@@ -28,11 +28,12 @@ SYSTEM_PROMPT = """너는 제주 도보 여행 도우미의 요청 해석기다.
  "location_text": 문자열|null, "use_current_location": true|false, "destination_text": 문자열|null,
  "round_trip": true|false, "facility": "pharmacy|toilet|wifi|police"|null, "place_query": 문자열|null,
  "mobility": "STANDARD|WHEELCHAIR|STROLLER"|null, "themes": [문자열],
+ "theme_counts": {"문장 속 장소 종류": 들를 곳 수} (종류별 개수를 말했을 때만, 예: {"빵집": 2, "카페": 1}),
  "changes": [{"op": "exclude|keep|complete|prioritize|add_theme", "target": 정수|null, "theme": 문자열|null}],
  "unsupported_features": [문자열]}
 규칙: guide=근처 시설·장소 설명 조회, route=두 장소 사이 걷는 길, plan_create=여러 곳을 들르는 일정 만들기,
 plan_modify=이미 있는 일정 고치기, chat=인사·잡담, unsupported=차량·예약·결제처럼 제공하지 않는 일.
-문장에 없는 지명·장소를 만들지 마라. 시각과 숫자는 출력하지 마라. 모르면 null."""
+문장에 없는 지명·장소를 만들지 마라. 시각은 출력하지 마라. 모르면 null."""
 
 
 class LLM(Protocol):
@@ -152,7 +153,18 @@ def llm_parse(llm: LLM, text: str, rules: ParseResult) -> ParseResult:
         key = THEMES.get(th) if isinstance(th, str) and th in text else None
         if key and key not in themes:
             themes.append(key)
+    counts = {}
+    raw_counts = data.get("theme_counts")
+    for word, n in (raw_counts.items() if isinstance(raw_counts, dict) else []):
+        key = THEMES.get(word) if isinstance(word, str) and word in text else None
+        if key and isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 10:  # noqa: PLR2004
+            counts[key] = counts.get(key, 0) + n
+            if key not in themes:
+                themes.append(key)
     slots.themes = themes
+    if counts:
+        slots.theme_counts = counts
+        sources["theme_counts"] = "inferred"
     try:
         # 일정 수정 지시(무엇을, 몇 번)와 미지원 항목 이름은 규칙 해석 값만 쓴다:
         # LLM이 번호를 바꾸거나 영문 코드를 만들어도 실행·화면에 들어가지 않게

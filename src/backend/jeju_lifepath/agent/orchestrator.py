@@ -411,8 +411,6 @@ class Agent:
         rules = parse_rules(text, self.clock(), has_trip)
         if self.llm is None or budget.llm_calls >= self.policy.max_llm_calls:
             return rules
-        if state.get("pending") and rules.intent == "chat":
-            return rules  # 질문에 대한 짧은 답은 규칙으로 충분(LLM 호출을 아낀다)
         budget.llm_calls += 1
         try:
             return llm_parse(self.llm, text, rules)
@@ -430,11 +428,13 @@ class Agent:
             base = ParseResult.model_validate(options["parse"])
             slots = base.slots.model_copy(update={options["slot"]: chosen["query"]})
             picked = dict(base.slot_sources, **{options["slot"]: "explicit"})
-            state["picked"] = {options["slot"]: chosen["ref"]}
+            # 출발지·도착지를 차례로 고를 수 있게 앞에서 고른 것도 남긴다
+            state.setdefault("picked", {})[options["slot"]] = chosen["ref"]
             return base.model_copy(
                 update={"slots": slots, "slot_sources": picked, "ambiguities": []}
             )
         if not pending:
+            state.pop("picked", None)  # 새 요청: 앞 요청에서 고른 후보는 쓰지 않음
             return parsed
         base = ParseResult.model_validate(pending)
         answer_only = parsed.intent in ("chat", base.intent) or (
@@ -561,7 +561,7 @@ class Agent:
         raise NeedInput(
             [
                 {
-                    "text": f"'{text}'이(가) 여러 곳이에요. 어느 곳인가요?",
+                    "text": f"'{text}'(으)로 찾은 곳이 여러 곳이에요(입구·주차장 등). 어디로 할까요?",
                     "options": [
                         {"label": it["label"], "reply": f"{i + 1}번"} for i, it in enumerate(items)
                     ],
@@ -676,7 +676,7 @@ class Agent:
         questions = []
         if not s.themes:
             questions.append({"text": "어떤 곳을 들르고 싶으세요? 예: 빵집, 카페, 바다"})
-        if not (s.stop_count or s.free_minutes or s.return_by):
+        if not (s.stop_count or s.theme_counts or s.free_minutes or s.return_by):
             questions.append({"text": "몇 곳을 들를까요? 아니면 몇 시까지 돌아와야 하나요?"})
         if not (s.destination_text or s.round_trip):
             questions.append(
@@ -722,7 +722,13 @@ class Agent:
                     pool.append({**place, "theme": theme, "query": query[:40]})
         if not pool:
             return present.no_candidates(ctx, p, self.policy.version)
-        quota = math.ceil((s.stop_count or len(s.themes)) / len(s.themes))
+        if s.theme_counts:  # "빵집 2곳, 카페 1곳" (LLM 해석, 검증됨)
+            # 개수를 말하지 않은 종류("카페도")는 1곳
+            theme_quota = {t: s.theme_counts.get(t, 1) for t in s.themes}
+            s = s.model_copy(update={"stop_count": sum(theme_quota.values())})
+        else:  # 분류별 개수가 없으면 총 개수를 분류 수로 나눠 올림(분류마다 최소 1곳)
+            quota = math.ceil((s.stop_count or len(s.themes)) / len(s.themes))
+            theme_quota = dict.fromkeys(s.themes, quota)
         chosen, obs = plan_greedy(
             start,
             end,
@@ -733,7 +739,7 @@ class Agent:
             stop_count=s.stop_count,
             budget_min=budget_min,
             stay_min=s.stay_minutes or 0,
-            theme_quota=dict.fromkeys(s.themes, quota),
+            theme_quota=theme_quota,
             max_stops=self.policy.max_stops,
         )
         if not chosen:

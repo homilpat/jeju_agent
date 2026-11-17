@@ -659,3 +659,53 @@ def test_current_location_start_kept_for_edits(world):
     assert trip_body(world, r["trip_id"])[0]["agent"]["start_point"]
     r2 = say(world, "1번 유지", conv=r["conversation_id"])  # 위치를 다시 안 보내도 됨
     assert r2["status"] == "ok"
+
+
+def test_nearby_entrances_are_asked_not_guessed(world):
+    r = say(world, "한라공에서 격자마을까지 가는 길")  # 한라공원·한라공원 주차장이 40m 거리
+    assert r["status"] == "needs_input"
+    assert len(r["questions"][0]["options"]) == 2
+    r2 = say(world, "2번", conv=r["conversation_id"])
+    assert r2["status"] == "ok" and r2["places"][0]["name"] == "한라공원 주차장"
+
+
+def test_llm_decides_counts_per_theme(world):
+    llm = MockLLM(lambda _t: json.dumps({
+        "intent": "plan_create", "themes": ["빵집", "카페"],
+        "theme_counts": {"빵집": 2, "카페": 1, "카지노": 3}, "round_trip": True}))
+    agent = Agent(world["store"], world["ctx"], llm=llm, clock=lambda: NOW)
+    r = say(world, "격자동에서 빵집 2곳, 카페 1곳 들르고 돌아오는 코스 짜줘", agent=agent)
+    themes = [s["detail"] for s in r["itinerary"]["stops"]]
+    assert len(themes) == 3
+    assert sum("베이커리" in t for t in themes) == 2 and sum(t.startswith("카페") for t in themes) == 1
+
+
+def test_pick_origin_then_destination(world):
+    r = say(world, "한라공에서 한라공까지 가는 길")
+    assert r["status"] == "needs_input"
+    r = say(world, "1번", conv=r["conversation_id"])
+    assert r["status"] == "needs_input"  # 이제 도착지
+    r = say(world, "2번", conv=r["conversation_id"])
+    assert r["status"] != "needs_input"  # 다시 출발지를 묻지 않음(40m 거리라 경로는 안내 안 함)
+    assert world["agent"].last_trajectory[-1]["name"] == "compare_routes"
+
+
+def test_counts_given_as_answer_use_llm(world):
+    def reply(text):
+        if "2곳" in text:
+            return json.dumps({"intent": "plan_create", "theme_counts": {"빵집": 2, "카페": 1}})
+        return json.dumps({"intent": "plan_create", "themes": ["빵집", "카페"], "round_trip": True})
+
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(reply), clock=lambda: NOW)
+    r = say(world, "격자동에서 빵집이랑 카페 들르고 돌아오는 코스 짜줘", agent=agent)
+    assert r["status"] == "needs_input"
+    r = say(world, "빵집 2곳, 카페 1곳", conv=r["conversation_id"], agent=agent)
+    assert len(r["itinerary"]["stops"]) == 3
+
+
+def test_theme_without_count_gets_one(world):
+    llm = MockLLM(lambda _t: json.dumps({"intent": "plan_create", "themes": ["빵집", "카페"],
+                                         "theme_counts": {"빵집": 2}, "round_trip": True}))
+    agent = Agent(world["store"], world["ctx"], llm=llm, clock=lambda: NOW)
+    r = say(world, "격자동에서 빵집 2곳이랑 카페도 들르고 돌아오는 코스 짜줘", agent=agent)
+    assert len(r["itinerary"]["stops"]) == 3

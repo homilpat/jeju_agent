@@ -37,6 +37,8 @@ class Slots(BaseModel):
     depart_at: str | None = None  # ISO datetime, Asia/Seoul
     return_by: str | None = None
     stop_count: int | None = Field(default=None, ge=1, le=10)
+    # 분류별 들를 곳 수 {"빵집": 2, "카페": 1}. LLM이 판단하고 llm_parse가 검증한다
+    theme_counts: dict[str, int] = Field(default_factory=dict)
     stay_minutes: int | None = Field(default=None, ge=0, le=600)
     free_minutes: int | None = Field(default=None, ge=1, le=1440)
     route_preference: RoutePreference | None = None

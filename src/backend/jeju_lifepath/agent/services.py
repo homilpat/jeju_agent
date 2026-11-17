@@ -20,9 +20,6 @@ from jeju_lifepath.geo.geodesy import haversine_m
 
 PHARMACY_CODE = "PM9"  # 카카오 분류 코드: 약국
 NEARBY_LIMIT = 5  # api/app.py NEARBY_LIMIT과 같음
-# 지명 검색 상위 몇 곳이 이 거리 안에 모두 모여 있으면 같은 장소로 본다.
-# shortcut: 근거 없는 잠정값(시장·공원 한 곳의 부속시설 거리 정도), 오판 사례가 나오면 조정
-SAME_PLACE_TOP, SAME_PLACE_M = 3, 500
 TOILET_GEOCODE_MAX = 15  # shortcut: 근거 없는 상한(주소 검색 호출 수 제한), 느리면 조정
 PUBLIC_SOURCES = {
     "wifi": "공공 와이파이 위치(제주데이터허브)",
@@ -72,13 +69,7 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
         if not found:
             return {"status": "not_found"}
         exact = [p for p in found if p["name"] == a.text]
-        top = found[: SAME_PLACE_TOP]
-        # "동문시장" -> 시장·주차장·입구처럼 한곳에 모인 결과면 같은 장소로 본다(멀리 떨어진 동명이 아니면 묻지 않음)
-        clustered = all(
-            haversine_m(top[0]["lon"], top[0]["lat"], p["lon"], p["lat"]) <= SAME_PLACE_M
-            for p in top
-        )
-        if len(found) == 1 or len(exact) == 1 or clustered:
+        if len(found) == 1 or len(exact) == 1:
             p = exact[0] if len(exact) == 1 else found[0]
             return {
                 "status": "found",
@@ -87,7 +78,8 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
                 "label": p["name"],
                 "ref": p["ref"],
             }
-        return {"status": "ambiguous", "options": found[:3]}
+        # 이름이 딱 맞는 곳이 하나가 아니면 고르게 한다(시장 입구·주차장처럼 붙어 있는 곳도 묻는다)
+        return {"status": "ambiguous", "options": found[:5]}
 
     def find_nearby_facilities(a: NearbyIn) -> dict:
         at = (a.at.lon, a.at.lat)
