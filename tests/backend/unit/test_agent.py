@@ -770,9 +770,32 @@ def test_planner_get_returns_version(tmp_path):
     assert c.get(f"/api/planners/{pid}").json()["version"] == 2
 
 
-def test_llm_category_word_is_not_a_place(world):
-    llm = MockLLM(lambda _t: json.dumps({"intent": "guide", "place_query": "약국",
-                                         "location_text": "근처", "facility": "pharmacy"}))
+
+def test_screen_follows_interpreted_request(world):
+    r = say(world, PLAN)
+    assert r["screen"] == "planner"
+    assert say(world, "2번 빼줘", conv=r["conversation_id"])["screen"] == "planner"
+    assert say(world, "격자동에서 격자마을까지 가는 길")["screen"] == "route"
+    assert say(world, "근처 약국 어디야", loc=LOC)["screen"] == "chat"
+    assert say(world, "이거 빼줘", conv=r["conversation_id"])["screen"] == "chat"  # 되묻기는 대화에 남음
+
+
+def test_nearby_facility_wins_over_place_name(world):
+    llm = MockLLM(lambda _t: json.dumps({"intent": "guide", "place_query": "약국"}))
     agent = Agent(world["store"], world["ctx"], llm=llm, clock=lambda: NOW)
-    r = say(world, "근처 약국 어디야", agent=agent)
-    assert r["status"] == "needs_input" and tools_called(agent) == []
+    r = say(world, "근처 약국 어디야", loc=LOC, agent=agent)
+    assert tools_called(agent) == ["find_nearby_facilities"] and r["status"] == "ok"
+
+
+def test_resume_after_commit_still_opens_planner(world):
+    def hook(stage):
+        if stage == "committed":
+            raise Crash()
+
+    mid = uuid.uuid4().hex
+    with pytest.raises(Crash):
+        say(world, PLAN, mid=mid,
+            agent=Agent(world["store"], world["ctx"], clock=lambda: NOW, stage_hook=hook))
+    world["store"]._db.close()
+    out = Agent(Store(world["path"]), world["ctx"], clock=lambda: NOW).resume(world["uid"], mid)
+    assert out["screen"] == "planner" and out["trip_id"]

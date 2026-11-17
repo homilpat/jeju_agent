@@ -304,6 +304,14 @@ class Agent:
         if ctx.get("trip_id"):
             state["trip_id"] = ctx["trip_id"]
         resp["summary"] = present.run_summary(ctx["runner"].trajectory)
+        # 화면이 갈 곳: 해석한 요청 종류 그대로(일정 -> 플래너, 길찾기 -> 경로 안내, 그 밖 -> 대화)
+        intent = ctx["parse"].intent if ctx.get("parse") else None
+        resp["screen"] = resp.get("screen") or (
+            "planner" if intent in ("plan_create", "plan_modify") and resp.get("itinerary")
+            and resp["status"] == "ok"
+            else "route" if intent == "route" and resp.get("routes") and resp["status"] == "ok"
+            else "chat"
+        )
         # 카카오 검색 결과(이름·주소·좌표)는 저장하지 않는다: 저장본·대화 기록에서는 빼고 화면에만 보낸다
         stored = present.for_storage(resp, present.used_kakao(ctx["runner"].trajectory))
         state["history"][-1]["text"] = stored["message"]
@@ -366,6 +374,7 @@ class Agent:
             else:  # 그 밖의 새 일정은 언제나 새 여행으로(기존 여행을 덮지 않음)
                 ctx["trip_id"], ctx["trip"] = None, None
         expected = ctx["trip"][1] if ctx["trip"] else None
+        draft["screen"] = "planner"  # 게시하는 건 늘 일정: 재개해도 플래너로 가게 저장본에 남긴다
         cp = {
             "text": ctx["text"],
             "trip_id": ctx["trip_id"],
@@ -621,7 +630,7 @@ class Agent:
 
     # intents ------------------------------------------------------------
     def _guide(self, p: ParseResult, ctx) -> dict:
-        if p.slots.place_query:
+        if p.slots.place_query and not p.slots.facility:  # 근처 시설 요청이 먼저
             r = ctx["runner"].call("search_places", {"query": p.slots.place_query})
             places = r["places"]
             picked = ctx["state"].pop("picked", {}).get("place_query")

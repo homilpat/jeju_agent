@@ -649,7 +649,7 @@ function RouteCard({ index, active, onChoose, onOpen }) {
   );
 }
 
-function Editor({ plannerId, onBack, onTravel, onOpenPlanner }) {
+function Editor({ plannerId, onBack, onTravel }) {
   const [sheet, setSheet] = useState("none");
   const [planner, setPlanner] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -666,21 +666,6 @@ function Editor({ plannerId, onBack, onTravel, onOpenPlanner }) {
   const [planErrors, setPlanErrors] = useState({});
   const inflight = useRef(new Set());
   const [crime, setCrime] = useState(null); // 범죄주의구간 표시: null = 아직 안 물어봄
-  const [aiOpen, setAiOpen] = useState(false);
-  const [view, setView] = useState(null); // 지금 보이는 지도(AI에게 같이 보냄)
-  const [aiMap, setAiMap] = useState({ points: [], lines: [] }); // AI가 찾은 곳(일정에 넣기 전)
-  const [aiChanged, setAiChanged] = useState(false); // AI가 고쳤는데 손으로 고친 내용과 겹침
-  const sentAt = useRef(0); // AI에게 보낼 때의 수정 횟수
-  const reloadPlanner = () =>
-    api
-      .getPlanner(plannerId)
-      .then((p) => {
-        version.current += 1;
-        setPlanner(p);
-        setDirty(false);
-        setAiChanged(false);
-      })
-      .catch((e) => setError(e.message));
 
   useEffect(() => {
     api
@@ -823,12 +808,7 @@ function Editor({ plannerId, onBack, onTravel, onOpenPlanner }) {
         }
       />
       <div className="editor-map">
-        <KakaoMap
-          points={[...mapPoints, ...aiMap.points.map((p, i) => ({ ...p, number: `후보${i + 1}` }))]}
-          lines={[...routeLines, ...aiMap.lines]}
-          crime={Boolean(crime)}
-          onView={setView}
-        />
+        <KakaoMap points={mapPoints} lines={routeLines} crime={Boolean(crime)} />
         <CrimeToggle value={crime} onChange={setCrime} />
       </div>
       <section className="itinerary">
@@ -923,40 +903,6 @@ function Editor({ plannerId, onBack, onTravel, onOpenPlanner }) {
         <button className="add-place-button" onClick={() => setSheet("search")}>
           <Icon name="plus" /> 장소 추가
         </button>
-        <button className="add-place-button" onClick={() => setAiOpen(!aiOpen)}>
-          <Icon name="spark" /> {aiOpen ? "AI 닫기" : "AI와 지도 보면서 같이 짜기"}
-        </button>
-        {aiChanged && (
-          <p className="empty-note">
-            AI가 일정을 고쳤는데, 그사이 직접 고친 내용이 있어요.{" "}
-            <button className="text-button" onClick={reloadPlanner}>
-              AI가 고친 일정 불러오기
-            </button>{" "}
-            (직접 고친 내용은 사라져요)
-          </p>
-        )}
-        {aiOpen && (
-          <AgentPanel
-            inline
-            tripId={plannerId}
-            view={view}
-            storageKey={`jeju-agent-trip-${plannerId}`}
-            beforeSend={async () => {
-              if (dirty && !(await save())) return false;
-              sentAt.current = version.current;
-              return true;
-            }}
-            onOpenPlanner={onOpenPlanner}
-            onReply={(reply) => {
-              setAiMap(reply.itinerary ? { points: [], lines: [] } : replyMap(reply));
-              if (reply.trip_id === plannerId && reply.trip_version && reply.trip_version !== planner.version) {
-                // AI가 이 여행을 고쳤다. 기다리는 동안 손으로 고친 게 있으면 덮지 않고 고르게 한다
-                if (version.current === sentAt.current) reloadPlanner();
-                else setAiChanged(true);
-              }
-            }}
-          />
-        )}
         <div className="editor-actions">
           <button className="secondary-button" onClick={save} disabled={saving}>
             <Icon name="check" /> {saved ? "저장했어요" : "저장"}
@@ -1131,7 +1077,7 @@ function SearchSheet({ added, full, onAdd, onClose }) {
   );
 }
 
-function RoutesSheet({ index, from, to, plan, error, onRetry, active, onChoose, onClose }) {
+function RoutesSheet({ index, heading, from, to, plan, error, onRetry, active, onChoose, onClose }) {
   const ready = from && to;
 
   return (
@@ -1139,7 +1085,10 @@ function RoutesSheet({ index, from, to, plan, error, onRetry, active, onChoose, 
       <div className="sheet-title route-sheet-title">
         <div>
           <h2>어떤 길로 걸을까요?</h2>
-          <p>{index < ORDINALS.length ? `${ORDINALS[index]} 번째 구간` : `${index + 1}번째 구간`}의 세 가지 길을 비교해요.</p>
+          <p>
+            {heading ||
+              `${index < ORDINALS.length ? `${ORDINALS[index]} 번째 구간` : `${index + 1}번째 구간`}의 세 가지 길을 비교해요.`}
+          </p>
         </div>
       </div>
       {!ready && <p className="empty-note">장소 위치를 아직 불러오지 못했어요. 잠시 후 다시 열어 주세요.</p>}
@@ -1433,7 +1382,7 @@ const inJejuView = (v) =>
 
 // AI와 대화하는 칸. 지금 보이는 지도(view)를 함께 보내 AI가 같은 지도를 보고 답한다.
 // tripId: 지금 열어 둔 여행(플래너에서 같이 짤 때). onReply: 답마다 부름(지도 갱신용)
-function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlanner, inline = false }) {
+function AgentPanel({ tripId, view, storageKey, onReply, onOpenPlanner }) {
   const [conversation, setConversation] = useState(() => readConversation(storageKey));
   const [log, setLog] = useState([]);
   const [text, setText] = useState("");
@@ -1441,8 +1390,8 @@ function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlann
   const [error, setError] = useState("");
   const [here, setHere] = useState(null); // 사용자가 "지금 위치 쓰기"를 눌렀을 때만
   const [rulesOnly, setRulesOnly] = useState(false);
-  // 대화에서 방금 만든 여행이 생기면 그 여행을 고친다(들어올 때 보던 여행보다 우선)
-  const [activeTrip, setActiveTrip] = useState(tripId || null);
+  // 이어지는 대화면 서버가 대화에 연결해 둔 여행(방금 만든 여행)을 쓴다. 새 대화일 때만 보던 여행을 넘긴다
+  const [activeTrip, setActiveTrip] = useState(() => (conversation ? null : tripId || null));
   const running = useRef(null);
   const bottom = useRef(null);
 
@@ -1454,18 +1403,12 @@ function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlann
       .catch(() => setConversation(null)); // 지난 대화가 없거나 만료됨: 새로 시작
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    if (!inline) bottom.current?.scrollIntoView({ block: "end" });
-  }, [log, busy, inline]);
+  useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [log, busy]);
 
   const send = async (said, location = here) => {
     const message = said.trim();
     if (!message || busy) return;
-    setBusy(true); // 저장을 기다리는 동안에도 다시 보내지 못하게
-    if (beforeSend && !(await beforeSend())) {
-      setBusy(false); // 플래너: 저장하지 않은 수정이 있으면 먼저 저장, 실패하면 보내지 않음
-      return;
-    }
+    setBusy(true);
     const id = newId();
     running.current = id;
     setError("");
@@ -1492,8 +1435,7 @@ function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlann
         reply = await api.agentMessage(body); // 연결이 끊겼으면 같은 메시지 번호로 한 번 더(중복 실행 안 됨)
       }
       if (reply.still_running) reply = await waitForRun(id, location, inJejuView(view));
-      // 플래너 안에서는 늘 화면에 열린 여행을 고친다. 새 여행이 생기면 열기 버튼만 보여준다
-      if (reply.trip_id && !inline) setActiveTrip(reply.trip_id);
+      if (reply.trip_id) setActiveTrip(reply.trip_id);
       setRulesOnly(reply.interpreter === "rules");
       setLog((l) => [...l, { role: "agent", text: reply.message, reply }]);
       onReply?.(reply);
@@ -1518,16 +1460,15 @@ function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlann
   const cancel = () => running.current && api.agentCancel(running.current).catch(() => {});
 
   return (
-    <div className={inline ? "agent-panel inline" : "agent-panel"}>
+    <div className="agent-panel">
       <section className="messages">
         <div className="agent-row">
           <span className="agent-avatar">
             <Icon name="spark" size={18} />
           </span>
           <div className="message agent-message">
-            {inline
-              ? "지도를 보면서 같이 짜요. 예: '빵집 두 곳이랑 카페 넣어서 돌아오는 코스 짜줘', '2번 빼줘', '이 근처 카페 찾아줘'"
-              : "무엇을 도와드릴까요? 지도에 보이는 곳이나 말씀하신 곳을 기준으로 시설 찾기, 걷는 길 비교, 일정 만들기와 고치기를 할 수 있어요."}
+            무엇을 도와드릴까요? 일정을 부탁하면 플래너로, 길을 물으면 경로 안내로 바로 옮겨 드려요. 지도에 보이는
+            곳이나 말씀하신 곳을 기준으로 찾아요.
           </div>
         </div>
         {rulesOnly && <p className="result-count">지금은 정해진 표현 위주로 알아들어요. 짧고 분명하게 말씀해 주세요.</p>}
@@ -1549,7 +1490,7 @@ function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlann
                   reply={m.reply}
                   onSend={(t) => send(t)}
                   onUseLocation={useLocation}
-                  onOpenPlanner={!inline || m.reply.trip_id !== tripId ? onOpenPlanner : null}
+                  onOpenPlanner={onOpenPlanner}
                   busy={busy}
                 />
               )}
@@ -1568,13 +1509,13 @@ function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlann
         <div ref={bottom} />
       </section>
       <form
-        className={inline ? "chat-input inline" : "chat-input"}
+        className="chat-input"
         onSubmit={(e) => {
           e.preventDefault();
           send(text);
         }}
       >
-        {log.length === 0 && !inline && (
+        {log.length === 0 && (
           <div className="suggestions">
             {SUGGESTIONS.map((x) => (
               <button type="button" key={x} onClick={() => send(x)} disabled={busy}>
@@ -1587,7 +1528,7 @@ function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlann
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder={inline ? "예: 2번 빼고 카페 넣어줘" : "예: 이 근처 약국 어디야?"}
+            placeholder="예: 애월에서 빵집 두 곳 들르는 코스 짜줘"
             aria-label="AI 길잡이에게 할 말"
             maxLength={500}
           />
@@ -1600,33 +1541,47 @@ function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlann
   );
 }
 
-// AI가 찾은 장소·경로를 지도에 그릴 값으로
-function replyMap(reply) {
-  const points = (reply?.places || [])
-    .filter((p) => p.lat != null)
-    .map((p, i) => ({ key: `ai${i}`, number: i + 1, name: p.name, lat: p.lat, lon: p.lon }));
-  const shown = reply?.routes?.routes.find((r) => r.found);
-  return { points, lines: shown ? [{ key: "ai-route", kind: shown.kind, path: shown.line }] : [] };
-}
-
-// 길찾기·근처 찾기: 지도를 늘 보여 주고, AI도 같은 지도를 본다
+// AI 길잡이 대화 화면. 지도를 늘 보여 주고 AI도 같은 지도를 본다.
+// 답의 screen(AI가 해석한 요청 종류)에 따라 일정이면 플래너로, 길찾기면 경로 안내를 연다
 function Chat({ onBack, tripId, onOpenPlanner }) {
   const [view, setView] = useState(null);
   const [latest, setLatest] = useState(null);
-  const { points, lines } = replyMap(latest);
+  const [routeKind, setRouteKind] = useState(null);
+  const [routeOpen, setRouteOpen] = useState(false);
+
+  const onReply = (reply) => {
+    setLatest(reply);
+    if (reply.screen === "planner" && reply.trip_id) onOpenPlanner(reply.trip_id);
+    else if (reply.screen === "route") {
+      setRouteKind(reply.routes.routes.find((r) => r.found)?.kind || null);
+      setRouteOpen(true);
+    }
+  };
+
+  const points = (latest?.places || [])
+    .filter((p) => p.lat != null)
+    .map((p, i) => ({ key: `ai${i}`, number: i + 1, name: p.name, lat: p.lat, lon: p.lon }));
+  const chosen = latest?.routes?.routes.find((r) => r.kind === routeKind && r.found);
+  const lines = chosen ? [{ key: "ai-route", kind: chosen.kind, path: chosen.line }] : [];
+
   return (
     <main className="chat-screen">
       <AppHeader title="AI 길잡이" back={onBack} />
       <div className="nearby-map">
         <KakaoMap points={points} lines={lines} onView={setView} />
       </div>
-      <AgentPanel
-        tripId={tripId}
-        view={view}
-        storageKey={CONV_KEY}
-        onReply={setLatest}
-        onOpenPlanner={onOpenPlanner}
-      />
+      <AgentPanel tripId={tripId} view={view} storageKey={CONV_KEY} onReply={onReply} onOpenPlanner={onOpenPlanner} />
+      {routeOpen && latest?.routes && (
+        <RoutesSheet
+          heading={`${latest.places[0]?.name}에서 ${latest.places[1]?.name}까지 세 가지 길을 비교해요.`}
+          from={latest.places[0]}
+          to={latest.places[1]}
+          plan={latest.routes}
+          active={routeKind}
+          onChoose={setRouteKind}
+          onClose={() => setRouteOpen(false)}
+        />
+      )}
     </main>
   );
 }
@@ -1686,6 +1641,7 @@ export default function App() {
   const [screen, setScreen] = useState(() => (readWelcomeSeen() ? "auth" : "welcome"));
   const [username, setUsername] = useState("");
   const [plannerId, setPlannerId] = useState(null);
+  const [fromChat, setFromChat] = useState(false); // 대화에서 플래너로 왔으면 뒤로 가기는 대화로
   // 여행 진행 상태는 화면 밖에 둬서 메뉴로 오가도 유지한다
   const [trip, setTrip] = useState(null);
   const [stop, setStop] = useState(0);
@@ -1754,6 +1710,7 @@ export default function App() {
           <Planners
             onOpen={(id) => {
               setPlannerId(id);
+              setFromChat(false);
               setScreen("editor");
             }}
             onLogout={logout}
@@ -1765,8 +1722,7 @@ export default function App() {
           <Editor
             key={plannerId}
             plannerId={plannerId}
-            onOpenPlanner={setPlannerId}
-            onBack={() => setScreen("planners")}
+            onBack={() => setScreen(fromChat ? "chat" : "planners")}
             onTravel={(planner, map) => {
               setTrip({ ...planner, map });
               setStop(0);
@@ -1789,6 +1745,7 @@ export default function App() {
             tripId={trip?.id}
             onOpenPlanner={(id) => {
               setPlannerId(id);
+              setFromChat(true);
               setScreen("editor");
             }}
           />

@@ -20,7 +20,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from jeju_lifepath.agent.models import ParseResult, ToolError
-from jeju_lifepath.agent.parse import FACILITIES, NOT_PLACE, THEMES
+from jeju_lifepath.agent.parse import FACILITIES, THEMES
 
 SYSTEM_PROMPT = """너는 제주 도보 여행 도우미의 요청 해석기다. 사용자 문장 하나를 읽고 JSON 하나만 출력한다.
 설명·코드블록 없이 JSON만. 형식:
@@ -33,6 +33,8 @@ SYSTEM_PROMPT = """너는 제주 도보 여행 도우미의 요청 해석기다.
  "unsupported_features": [문자열]}
 규칙: guide=근처 시설·장소 설명 조회, route=두 장소 사이 걷는 길, plan_create=여러 곳을 들르는 일정 만들기,
 plan_modify=이미 있는 일정 고치기, chat=인사·잡담, unsupported=차량·예약·결제처럼 제공하지 않는 일.
+location_text·destination_text·place_query에는 고유한 지명·가게 이름만 넣는다. '약국', '카페', '근처', '여기'처럼
+종류나 위치를 가리키는 말은 넣지 않는다(종류는 facility·themes, '근처·여기'는 use_current_location).
 문장에 없는 지명·장소를 만들지 마라. 시각은 출력하지 마라. 모르면 null."""
 
 
@@ -125,12 +127,8 @@ def llm_parse(llm: LLM, text: str, rules: ParseResult) -> ParseResult:
     """LLM 해석을 규칙 해석 위에 겹친다. 검증에 실패하면 ValueError(호출 쪽이 규칙 결과를 씀)."""
     data = _json_block(llm.complete(SYSTEM_PROMPT, text))
 
-    def grounded(value) -> str | None:
-        """사용자 문장에 실제로 있는 말만. '약국'·'카페'처럼 종류 이름은 지명·장소 이름으로
-        받지 않는다(실 LLM이 가끔 '근처 약국'의 '약국'을 장소 이름으로 돌려줌, 2026-11-18 평가)."""
-        if not (isinstance(value, str) and value and value in text):
-            return None
-        return None if value in FACILITIES or value in THEMES or value in NOT_PLACE else value
+    def grounded(value) -> str | None:  # 사용자 문장에 실제로 있는 말만
+        return value if isinstance(value, str) and value and value in text else None
 
     slots = rules.slots.model_copy()
     sources = dict(rules.slot_sources)
