@@ -77,6 +77,8 @@
 - 진행: REQUIREMENTS.md(F1~F11) 작성 완료, POC 제작 시작.
 - 재확인(사용자 재질문): 지도 위에 자체 길 그래프로 경로를 그리는 방식이 일반적인 구조임. 대안인 TMAP 보행자 경로 API는 걸어가는 길을 주지만, 우리 기준(안전환경·휠체어·폐쇄 구간)을 반영할 수 없어 쓰지 않음. 현재 방식 유지.
 
+- 재확인(사용자 질문 "길도 카카오맵으로 그려야 하지 않나"): 맞음. 경로선은 카카오 지도 기능(kakao.maps.Polyline)으로 카카오 지도 위에 그림 (poc/app.js). 우리 엔진은 "어느 길로 갈지"만 정함. 카카오 키가 없을 때만 SVG 대체 지도 사용.
+
 ## POC 1차 구현 (2026-11-13)
 - 파일: poc/index.html·app.js·places.js, server.py(F11), scripts/fetch_osm.py → scripts/build_demo_graph.py → poc/data/graph.js.
 - 비용·통행 제약은 Python 엔진(cost.py·constraints.py)으로 미리 계산해 graph.js에 저장, 브라우저는 탐색만 함 (엔진 1개 유지).
