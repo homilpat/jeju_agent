@@ -369,6 +369,15 @@ class MapView(BaseModel):
         return self
 
 
+class ScreenContext(BaseModel):
+    """사용자가 지금 보고 있는 화면. AI가 같은 화면을 보고 답하게 한다(저장 안 함)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: Literal["planners", "editor", "travel"]
+    travel_stop: int | None = Field(default=None, ge=0, le=MAX_PLACES)
+
+
 class AgentMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -379,6 +388,7 @@ class AgentMessage(BaseModel):
     location: LatLon | None = None  # 사용자가 위치 사용을 허락했을 때만. 저장하지 않음
     trip_id: int | None = None
     map_view: MapView | None = None
+    screen: ScreenContext | None = None
 
 
 class AgentResume(BaseModel):
@@ -645,6 +655,7 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
             location=body.location.model_dump() if body.location else None,
             trip_id=body.trip_id,
             map_view=body.map_view.model_dump() if body.map_view else None,
+            screen=body.screen.model_dump() if body.screen else None,
         )
 
     @app.post("/api/agent/runs/{run_id}/resume")

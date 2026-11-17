@@ -101,8 +101,10 @@ class Agent:
         location: dict | None = None,
         trip_id: int | None = None,
         map_view: dict | None = None,
+        screen: dict | None = None,
     ) -> dict:
-        """map_view: 사용자가 지금 보고 있는 지도({center: {lat, lon}, south, west, north, east}).
+        """screen: 사용자가 지금 보고 있는 화면({name, travel_stop?}). AI 해석에 함께 넘긴다.
+        map_view: 사용자가 지금 보고 있는 지도({center: {lat, lon}, south, west, north, east}).
         AI가 같은 지도를 보고 "여기", "이 근처"를 이해하게 한다. 저장하지 않는다."""
         conv_id = conversation_id or uuid.uuid4().hex
         owner = self.store.conversation_owner(conv_id)
@@ -120,14 +122,14 @@ class Agent:
             message_id,
             conv_id,
             _hash(payload),
-            {"text": text, "trip_id": trip_id, "conversation_id": conv_id},
+            {"text": text, "trip_id": trip_id, "conversation_id": conv_id, "screen": screen},
         )
         if status == "conflict":
             raise Conflict(message_id)
         if status == "duplicate":
             return stored or present.still_running(message_id, conv_id)
         return self._run(user_id, message_id, conv_id, text, location, trip_id, saved_parse=None,
-                         map_view=map_view)
+                         map_view=map_view, screen=screen)
 
     def resume(
         self, user_id: int, run_id: str, location: dict | None = None,
@@ -171,6 +173,7 @@ class Agent:
             saved_parse=None,
             pinned_version=cp.get("trip_version", 0) if "parse" in cp else None,
             map_view=map_view,
+            screen=cp.get("screen"),
         )
 
     def cancel(self, user_id: int, run_id: str) -> bool:
@@ -201,6 +204,7 @@ class Agent:
         self, user_id, run_id, conv_id, text, location, trip_id, saved_parse,
         pinned_version: int | None = None,
         map_view: dict | None = None,
+        screen: dict | None = None,
     ) -> dict:
         """pinned_version: 재개일 때 실행 당시 대상 여행 버전(None 여행이면 0). 대화의 현재 여행으로
         바꾸지 않고, 그사이 여행이 바뀌었으면 게시하지 않는다."""
@@ -245,7 +249,9 @@ class Agent:
             return self._close(ctx, resp, "failed", state)
         try:
             self._stage(user_id, run_id, "interpreting")
-            parsed = saved_parse or self._parse(text, state, bool(trip), budget)
+            parsed = saved_parse or self._parse(
+                text, state, bool(trip), budget, present.screen_note(screen, trip)
+            )
             parsed = self._merge_pending(parsed, text, state)
             ctx["parse"] = parsed
             self._stage(
@@ -257,6 +263,7 @@ class Agent:
                     "trip_id": trip_id,
                     "trip_version": trip[1] if trip else 0,
                     "conversation_id": conv_id,
+                    "screen": screen,  # 재개 때 같은 화면 맥락으로 다시 해석
                     "parse": parsed.model_dump(mode="json"),
                 },
             )
@@ -441,13 +448,15 @@ class Agent:
         return self._close(ctx, draft, "completed", state)
 
     # interpretation -------------------------------------------------------
-    def _parse(self, text: str, state: dict, has_trip: bool, budget: Budget) -> ParseResult:
+    def _parse(
+        self, text: str, state: dict, has_trip: bool, budget: Budget, screen_note: str = ""
+    ) -> ParseResult:
         rules = parse_rules(text, self.clock(), has_trip)
         if self.llm is None or budget.llm_calls >= self.policy.max_llm_calls:
             return rules
         budget.llm_calls += 1
         try:
-            return llm_parse(self.llm, text, rules)
+            return llm_parse(self.llm, text, rules, screen_note)
         except (ToolError, ValueError) as e:
             log.info("llm parse fell back to rules: %s", type(e).__name__)
             rules.ambiguities = list(rules.ambiguities)

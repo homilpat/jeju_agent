@@ -135,6 +135,22 @@ def for_storage(resp: dict, kakao: bool) -> dict:
     return out
 
 
+def screen_note(screen: dict | None, trip) -> str:
+    """화면 맥락 -> LLM에 넘길 한 줄(사용자에게는 보이지 않음)."""
+    if not screen:
+        return ""
+    places = len(trip[0].get("places", [])) if trip else 0
+    name = screen.get("name")
+    if name == "editor":
+        return f"여행 일정 편집(플래너) 화면, 이 여행에 장소 {places}곳"
+    if name == "travel":
+        stop = (screen.get("travel_stop") or 0) + 1
+        return f"여행 안내 화면, 일정 {places}곳 중 {stop}번째 장소에서 다음 장소로 가는 중"
+    if name == "planners":
+        return "내 여행 목록 화면"
+    return ""
+
+
 def stage_text(stage: str) -> str:
     return {
         "completed": "답을 마쳤어요.",

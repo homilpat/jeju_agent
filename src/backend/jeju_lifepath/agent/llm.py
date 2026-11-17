@@ -123,9 +123,11 @@ def _json_block(text: str) -> dict:
     return json.loads(m.group(0))
 
 
-def llm_parse(llm: LLM, text: str, rules: ParseResult) -> ParseResult:
+def llm_parse(llm: LLM, text: str, rules: ParseResult, screen_note: str = "") -> ParseResult:
     """LLM 해석을 규칙 해석 위에 겹친다. 검증에 실패하면 ValueError(호출 쪽이 규칙 결과를 씀)."""
-    data = _json_block(llm.complete(SYSTEM_PROMPT, text))
+    # 사용자가 보고 있는 화면을 함께 알려 해석을 돕는다. 문장 근거 확인은 사용자 문장(text)으로만 한다
+    user = f"[사용자가 보고 있는 화면: {screen_note}]\n{text}" if screen_note else text
+    data = _json_block(llm.complete(SYSTEM_PROMPT, user))
 
     def grounded(value) -> str | None:  # 사용자 문장에 실제로 있는 말만
         return value if isinstance(value, str) and value and value in text else None

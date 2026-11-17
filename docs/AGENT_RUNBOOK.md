@@ -8,8 +8,9 @@ cd src/frontend && npm run build && cd ../..
 .venv/Scripts/uvicorn jeju_lifepath.api.app:app --port 8000
 ```
 
-화면: 로그인 → "AI에게 일정 부탁하기" 또는 왼쪽 메뉴 "AI 길잡이"(지도와 함께, 대화 화면 하나).
-AI가 해석한 요청 종류에 따라 화면이 옮겨 간다: 일정 만들기·고치기 → 그 여행의 플래너 화면, 길찾기 → 경로 비교 창, 그 밖(근처 시설·되묻기 등) → 대화에 남음.
+화면: 로그인한 뒤 어느 화면에서나 오른쪽 아래 AI 버튼(넓은 화면은 왼쪽 메뉴 "AI 길잡이")으로 대화창을 연다. 대화는 하나로 이어진다.
+AI는 지금 보고 있는 화면(여행 목록 / 플래너와 그 여행 / 여행 안내와 몇 번째 구간)과 그 화면 지도에 보이는 범위를 함께 받는다.
+AI가 해석한 요청 종류에 따라: 일정 만들기·고치기 → 뒤 화면이 그 여행의 플래너로 바뀌고 새로 그려짐(손으로 고친 게 있으면 먼저 저장, AI가 고친 뒤 덮을지 물음), 길찾기 → 경로 비교 창, 그 밖 → 대화에 남음.
 응답의 `screen`(planner/route/chat)은 이 이동에만 쓰고 화면에 보이지 않는다.
 
 ## 설정 (`.env`, 값은 로그·응답에 넣지 않음)
@@ -27,7 +28,7 @@ AI가 해석한 요청 종류에 따라 화면이 옮겨 간다: 일정 만들�
 
 | 요청 | 설명 |
 |---|---|
-| `POST /api/agent/messages` | `{message_id, conversation_id?, text, location?, trip_id?, map_view?}`. map_view는 지금 보이는 지도(가운데·네 모서리), 저장 안 함. 같은 message_id 재전송은 같은 응답, 다른 내용이면 409 |
+| `POST /api/agent/messages` | `{message_id, conversation_id?, text, location?, trip_id?, map_view?, screen?}`. screen은 지금 화면 `{name: planners|editor|travel, travel_stop?}`, AI 해석에만 쓰고 저장 안 함. map_view는 지금 보이는 지도(가운데·네 모서리), 저장 안 함. 같은 message_id 재전송은 같은 응답, 다른 내용이면 409 |
 | `GET /api/agent/runs/{run_id}` | 진행 상태. `?detail=true`면 도구 호출 기록(본인 것만) |
 | `POST /api/agent/runs/{run_id}/cancel` | 취소 요청. 게시 직전에 확인해 일정에 반영하지 않음 |
 | `POST /api/agent/runs/{run_id}/resume` | 서버가 꺼졌다 켜져 중단된 실행 이어가기. `{location?}` |

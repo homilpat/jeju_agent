@@ -799,3 +799,42 @@ def test_resume_after_commit_still_opens_planner(world):
     world["store"]._db.close()
     out = Agent(Store(world["path"]), world["ctx"], clock=lambda: NOW).resume(world["uid"], mid)
     assert out["screen"] == "planner" and out["trip_id"]
+
+
+def test_llm_sees_current_screen(world):
+    r = say(world, PLAN)
+    seen = []
+
+    def reply(user):
+        seen.append(user)
+        return json.dumps({"intent": "plan_modify"})
+
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(reply), clock=lambda: NOW)
+    agent.handle_message(world["uid"], uuid.uuid4().hex, "2번 빼줘", trip_id=r["trip_id"],
+                         screen={"name": "editor"})
+    assert "플래너" in seen[0] and "2곳" in seen[0] and seen[0].endswith("2번 빼줘")
+    agent.handle_message(world["uid"], uuid.uuid4().hex, "다음 장소 가는 길", trip_id=r["trip_id"],
+                         screen={"name": "travel", "travel_stop": 0})
+    assert "1번째 장소에서 다음 장소로" in seen[1]
+
+
+def test_resume_keeps_screen_context(world):
+    seen = []
+
+    def reply(user):
+        seen.append(user)
+        return json.dumps({"intent": "chat"})
+
+    def hook(stage):
+        if stage == "running_tool":
+            raise Crash()
+
+    mid = uuid.uuid4().hex
+    with pytest.raises(Crash):
+        Agent(world["store"], world["ctx"], llm=MockLLM(reply), clock=lambda: NOW,
+              stage_hook=hook).handle_message(world["uid"], mid, "안녕",
+                                              screen={"name": "planners"})
+    world["store"]._db.close()
+    Agent(Store(world["path"]), world["ctx"], llm=MockLLM(reply), clock=lambda: NOW).resume(
+        world["uid"], mid)
+    assert len(seen) == 2 and "여행 목록" in seen[1]
