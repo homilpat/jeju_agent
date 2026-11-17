@@ -8,22 +8,29 @@ All messages returned to the browser are plain Korean sentences (no field names 
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import os
 import re
 import threading
+import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import Cookie, FastAPI, HTTPException, Request, Response
+from fastapi import Cookie, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pyproj import Transformer
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from jeju_lifepath.api.store import SESSION_DAYS, Store
+from jeju_lifepath.geo.geodesy import haversine_m
 from jeju_lifepath.presentation.route import render_plan
 from jeju_lifepath.schemas import MobilityProfile, RoutePreference
 
@@ -32,6 +39,10 @@ DEFAULT_DB = ROOT / "data" / "private" / "app.sqlite3"
 FRONTEND_DIST = ROOT / "src" / "frontend" / "dist"
 PROCESSED_DIR = ROOT / "data" / "processed"
 OSM_FILE = ROOT / "data" / "private" / "osm" / "jeju_highways.json"
+PRIVATE_DIR = ROOT / "data" / "private"
+ENV_FILE = ROOT / ".env"
+TOILET_FILE = PRIVATE_DIR / "공중화장실정보_제주특별자치도.csv"
+CCTV_FILES = [PRIVATE_DIR / "CCTV정보_제주특별자치도.csv", PRIVATE_DIR / "CCTV정보.csv"]
 # 제주도 전체를 덮는 사각형(경도·위도). 경로 요청 좌표가 이 밖이면 거절한다
 # (kakao.js 검색 범위와 같음)
 JEJU_LON = (125.9, 127.0)
@@ -101,22 +112,160 @@ class RouteQuery(BaseModel):
     origin: LatLon
     destination: LatLon
     mobility: MobilityProfile = MobilityProfile.STANDARD
+    prefer_cctv: bool = False  # 사용자가 "CCTV 근처 길로 안내할까요?"에 네라고 했을 때만
 
 
 def default_router():
     """실제 제주 OSM 보행망 + 사고다발 구역. 처음 경로 요청 때 한 번 불러온다(약 3초)."""
     from jeju_lifepath.geo.osm import WalkNetwork  # noqa: PLC0415 - 무거운 불러오기를 첫 요청까지 미룸
-    from jeju_lifepath.routing.walk import AccidentZones, WalkRouter  # noqa: PLC0415
+    from jeju_lifepath.routing.walk import AccidentZones, CctvPoints, WalkRouter  # noqa: PLC0415
 
     if not OSM_FILE.exists():
         return None
     return WalkRouter(
         WalkNetwork.from_file(OSM_FILE),
         AccidentZones.from_file(PROCESSED_DIR / "accident-zones.geojson"),
+        CctvPoints.from_csvs(CCTV_FILES),
     )
 
 
 MSG_ROUTES_UNAVAILABLE = "지금은 경로를 계산할 수 없어요. 길 자료가 준비되지 않았어요."
+MSG_OVERLAY_FAILED = "범죄주의구간 지도를 불러오지 못했어요. 잠시 후 다시 시도해 주세요."
+
+# 생활안전지도 범죄주의구간(전체) 지도 그림.
+# 카카오 지도와 같은 좌표계(EPSG:5181)로 받아 그대로 겹친다
+SAFEMAP_CRIME_WMS = "https://www.safemap.go.kr/openapi2/IF_0087_WMS"
+# shortcut: 큰 화면 한 장이면 충분하다고 봄(근거 없음), 4K 화면이면 늘리기
+MAX_OVERLAY_PX = 2048
+
+
+def read_env(name: str) -> str:
+    """환경변수 먼저, 없으면 .env. 값은 절대 로그·응답에 넣지 않는다."""
+    if os.environ.get(name):
+        return os.environ[name]
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            k, _, v = line.partition("=")
+            if k.strip() == name and not line.lstrip().startswith("#"):
+                return v.strip().strip('"').strip("'")
+    return ""
+
+
+def fetch_crime_png(
+    bbox_5181: tuple[float, float, float, float], width: int, height: int
+) -> bytes | None:
+    key = read_env("SAFEMAP_API_KEY")
+    if not key:
+        return None
+    url = (
+        SAFEMAP_CRIME_WMS
+        + "?"
+        + urllib.parse.urlencode(
+            {
+                "serviceKey": key,
+                "request": "GetMap",
+                "service": "WMS",
+                "version": "1.1.1",
+                "srs": "EPSG:5181",
+                "bbox": ",".join(f"{v:.2f}" for v in bbox_5181),
+                "width": width,
+                "height": height,
+                "format": "image/png",
+                "transparent": "TRUE",
+            }
+        )
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = r.read()
+    except Exception:
+        return None
+    return body if body.startswith(b"\x89PNG") else None  # 오류 때는 HTML이 옴
+
+
+def load_toilets(path: Path) -> list[dict]:
+    """공중화장실 표준데이터(cp949). 위경도가 없어 이름·주소·편의시설만 쓴다."""
+    if not path.exists():
+        return []
+    out = []
+    for r in csv.DictReader(io.StringIO(path.read_bytes().decode("cp949"))):
+        road, lot = r["소재지도로명주소"].strip(), r["소재지지번주소"].strip()
+        if not (road or lot):
+            continue
+        out.append(
+            {
+                "name": r["화장실명"].strip(),
+                "addresses": [a for a in (road, lot) if a],
+                "hours": (r["개방시간상세"] or r["개방시간"]).strip(),
+                "accessible": any(
+                    (r.get(k) or "0").strip() not in ("", "0")
+                    for k in ("남성용-장애인용대변기수", "여성용-장애인용대변기수")
+                ),
+                "diaper": r["기저귀교환대유무"].strip() == "Y",
+                "bell": r["비상벨설치여부"].strip() == "Y",
+            }
+        )
+    return out
+
+
+# 주소 속 읍·면·동 이름(예: "애월읍", "삼양1동"). 도로명 주소만 있는 동 지역 화장실에는 없다
+REGION_WORD = re.compile(r"\S+[읍면동](?=\s|$)")
+
+
+def toilets_in(toilets: list[dict], city: str, regions: list[str]) -> list[dict]:
+    """같은 읍면동이 주소에 적힌 화장실 + (동 지역이면) 읍면동이 안 적힌 같은 시 화장실.
+    shortcut: 주소 글자 대조라 표기가 다르면 빠지고, 경계 근처 옆 동 화장실은 못 찾음.
+    좌표 자료가 생기면 거리로 바꾸기."""
+    wanted = set(regions)
+    in_dong = any(r.endswith("동") for r in regions)
+    picked = []
+    for t in toilets:
+        if not any(city in a for a in t["addresses"]):
+            continue
+        words = {w for a in t["addresses"] for w in REGION_WORD.findall(a)}
+        if words & wanted or (in_dong and not words):
+            picked.append(t)
+    return picked
+
+
+NEARBY_DATASETS = {"wifi": "hub-wifi.geojson", "police": "safemap-police.geojson"}
+NEARBY_LIMIT = 5  # shortcut: 근거 없는 개수(한 화면에 보기 좋은 정도), 시연 후 조정
+
+
+def load_nearby(processed_dir: Path) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for kind, name in NEARBY_DATASETS.items():
+        path = processed_dir / name
+        feats = json.loads(path.read_text(encoding="utf-8"))["features"] if path.exists() else []
+        out[kind] = [
+            {
+                # 원자료 이름의 밑줄("전기차충전소_제주시청")은 화면에서 띄어쓰기로
+                "name": (f["properties"].get("place") or f["properties"].get("name") or "").replace(
+                    "_", " "
+                ),
+                "detail": f["properties"].get("category") or f["properties"].get("kind") or "",
+                "lon": f["geometry"]["coordinates"][0],
+                "lat": f["geometry"]["coordinates"][1],
+            }
+            for f in feats
+        ]
+    return out
+
+
+def nearest(points: list[dict], lat: float, lon: float, limit: int = NEARBY_LIMIT) -> list[dict]:
+    ranked = sorted(
+        ({**p, "distance_m": round(haversine_m(lon, lat, p["lon"], p["lat"]))} for p in points),
+        key=lambda p: p["distance_m"],
+    )
+    out, seen = [], set()
+    for p in ranked:  # 와이파이는 한 장소에 기기가 여러 대라 같은 이름은 가장 가까운 것 하나만
+        if p["name"] not in seen:
+            seen.add(p["name"])
+            out.append(p)
+        if len(out) == limit:
+            break
+    return out
 
 
 class Planner(BaseModel):
@@ -128,6 +277,8 @@ class Planner(BaseModel):
     places: list[PlannerPlace] = Field(default_factory=list, max_length=MAX_PLACES)
     # 장소 사이 구간마다 고른 경로 종류 (장소 n개면 n-1개)
     route_choices: list[RoutePreference] = Field(default_factory=list)
+    # "공개된 방범 CCTV가 근처에 있는 길로 안내할까요?" 답. None = 아직 안 물어봄
+    prefer_cctv: bool | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Planner:
@@ -173,9 +324,14 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     static_dir: Path = FRONTEND_DIST,
     processed_dir: Path = PROCESSED_DIR,
     router_factory: Callable[[], object | None] = default_router,
+    *,
+    crime_fetch: Callable[..., bytes | None] = fetch_crime_png,
+    toilet_file: Path = TOILET_FILE,
 ) -> FastAPI:
     store = Store(db_path)
     public_points = load_public_points(processed_dir)
+    toilets = load_toilets(toilet_file)
+    nearby = load_nearby(processed_dir)
     app = FastAPI(title="JEJU LifePath", docs_url=None, redoc_url=None, openapi_url=None)
 
     _install_error_handlers(app)
@@ -292,8 +448,64 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
             (query.origin.lon, query.origin.lat),
             (query.destination.lon, query.destination.lat),
             query.mobility,
+            prefer_cctv=query.prefer_cctv,
         )
         return render_plan(plan)
+
+    # map overlay ---------------------------------------------------------
+    to_5181 = Transformer.from_crs("EPSG:4326", "EPSG:5181", always_xy=True)
+
+    @app.get("/api/overlays/crime")
+    def crime_overlay(  # noqa: PLR0917 - 지도 화면 사각형과 픽셀 크기
+        west: float,
+        south: float,
+        east: float,
+        north: float,
+        width: Annotated[int, Query(ge=1, le=MAX_OVERLAY_PX)],
+        height: Annotated[int, Query(ge=1, le=MAX_OVERLAY_PX)],
+        token: SessionCookie = None,
+    ) -> Response:
+        """사용자가 "범죄주의구간 표시"에 네라고 했을 때만 화면이 부른다.
+        키를 숨기려고 서버가 대신 받는다."""
+        current_user(token)
+        jeju = (
+            west < JEJU_LON[1]
+            and east > JEJU_LON[0]
+            and south < JEJU_LAT[1]
+            and north > JEJU_LAT[0]
+        )
+        if not (west < east and south < north and jeju):
+            raise HTTPException(400, MSG_INVALID_INPUT)
+        x1, y1 = to_5181.transform(west, south)
+        x2, y2 = to_5181.transform(east, north)
+        png = crime_fetch((x1, y1, x2, y2), width, height)
+        if png is None:
+            raise HTTPException(502, MSG_OVERLAY_FAILED)
+        return Response(
+            png, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"}
+        )
+
+    # nearby facilities ----------------------------------------------------
+    @app.get("/api/nearby/toilets")
+    def nearby_toilets(
+        city: Annotated[str, Query(pattern="^(제주시|서귀포시)$")],
+        region: Annotated[list[str], Query(min_length=1, max_length=4)],
+        token: SessionCookie = None,
+    ) -> list[dict]:
+        """좌표 없는 자료라 후보(이름·주소)만 준다.
+        화면이 주소로 그때그때 위치를 찾고 저장하지 않는다."""
+        current_user(token)
+        return toilets_in(toilets, city, region)
+
+    @app.get("/api/nearby/{kind}")
+    def nearby_points(
+        kind: Literal["wifi", "police"],
+        lat: Annotated[float, Query(ge=JEJU_LAT[0], le=JEJU_LAT[1])],
+        lon: Annotated[float, Query(ge=JEJU_LON[0], le=JEJU_LON[1])],
+        token: SessionCookie = None,
+    ) -> list[dict]:
+        current_user(token)
+        return nearest(nearby[kind], lat, lon)
 
     if static_dir.is_dir():  # 빌드한 화면이 있으면 같은 주소에서 함께 제공
         app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")

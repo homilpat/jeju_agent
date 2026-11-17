@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "./api";
-import { MSG_MAP_FAILED, MSG_SEARCH_FAILED, loadKakao, resolvePlace, searchPlaces } from "./kakao";
+import { api, crimeOverlayUrl } from "./api";
+import { MSG_MAP_FAILED, MSG_SEARCH_FAILED, geocode, loadKakao, regionOf, resolvePlace, searchPlaces } from "./kakao";
 
 // 피그마 메이크 디자인(제주 안전 여행 플래너)에서 옮김. 화면 데이터는 아직 예시값이며 API 연결 시 바꾼다.
 
@@ -160,58 +160,16 @@ function Icon({ name, size = 20, strokeWidth = 2 }) {
 }
 
 
-function MapPlaceholder({ mode = "planner" }) {
-  return (
-    <div className={`map-placeholder map-${mode}`} aria-label="지도 자리">
-      <div className="map-label">
-        <Icon name="map" size={16} /> 지도
-      </div>
-      <span className="road road-a" />
-      <span className="road road-b" />
-      <span className="road road-c" />
-      {mode === "planner" && (
-        <>
-          <span className="route-line route-planner" />
-          <MapPin number="1" className="pin-one" />
-          <MapPin number="2" className="pin-two" />
-          <MapPin number="3" className="pin-three" />
-        </>
-      )}
-      {mode === "compare" && (
-        <>
-          <span className="compare-line solid" />
-          <span className="compare-line dotted" />
-          <span className="compare-line thick" />
-          <MapPin number="1" className="pin-one" />
-          <MapPin number="2" className="pin-three" />
-        </>
-      )}
-      {(mode === "travel" || mode === "chat") && (
-        <>
-          <span className="route-line route-travel" />
-          <span className="my-location">
-            <span />
-          </span>
-          <MapPin number="" className="pin-destination" />
-          {mode === "chat" && (
-            <span className="facility-pin">
-              <Icon name="location" size={18} />
-              <b>화장실</b>
-            </span>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
 // 카카오 지도에 장소 핀을 일정 번호와 함께 찍는다. 경로 선은 경로 계산을 붙인 뒤에 그린다.
 // points: [{ key, number, name, lat, lon }], lines: [{ key, kind, path: [[lat, lon], ...] }]
-function KakaoMap({ points, lines = [] }) {
+// crime: 사용자가 "범죄주의구간 표시"에 네라고 했을 때만 생활안전지도 그림을 겹친다
+function KakaoMap({ points, lines = [], crime = false }) {
   const box = useRef(null);
   const map = useRef(null);
   const overlays = useRef([]);
   const [error, setError] = useState("");
+  const [ready, setReady] = useState(false);
+  const [crimeError, setCrimeError] = useState("");
   const pointsKey =
     points.map((p) => [p.key, p.number, p.lat, p.lon, p.name].join(":")).join("|") +
     "#" +
@@ -228,6 +186,7 @@ function KakaoMap({ points, lines = [] }) {
           center: new kakao.maps.LatLng(33.38, 126.55), // 제주도 가운데쯤
           level: 10,
         });
+        setReady(true);
         overlays.current.forEach((o) => o.setMap(null));
         const bounds = new kakao.maps.LatLngBounds();
         const css = getComputedStyle(document.documentElement);
@@ -263,17 +222,99 @@ function KakaoMap({ points, lines = [] }) {
     };
   }, [pointsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 지도를 멈출 때마다 지금 보이는 사각형만큼 그림 한 장을 받아 화면 가운데에 맞춰 붙인다.
+  // 카카오 지도와 같은 좌표계로 받으므로 늘이거나 줄이지 않고 그대로 맞는다
+  useEffect(() => {
+    if (!crime || !ready) return undefined;
+    const kakao = window.kakao;
+    const m = map.current;
+    // 가운데를 기준점으로 붙인다: 왼쪽 위 꼭짓점에 붙이면 크게 확대했을 때 카카오 지도가
+    // 기준점이 화면 밖이라고 보고 그림을 숨기는 것으로 보임(확대하면 사라지는 문제)
+    const overlay = new kakao.maps.CustomOverlay({ xAnchor: 0.5, yAnchor: 0.5, zIndex: 0 });
+    let latest = 0; // 늦게 온 예전 그림이 새 그림을 덮지 않게
+    const draw = () => {
+      const bounds = m.getBounds();
+      const [sw, ne] = [bounds.getSouthWest(), bounds.getNorthEast()];
+      const [width, height] = [box.current.clientWidth, box.current.clientHeight];
+      // 화면 가운데(지도 좌표계 기준). 그림도 같은 좌표계라 가운데끼리 맞추면 전체가 맞는다
+      const middle = m.getProjection().coordsFromContainerPoint(new kakao.maps.Point(width / 2, height / 2));
+      const img = new Image(width, height);
+      img.className = "crime-overlay";
+      img.alt = "";
+      const mine = ++latest;
+      img.onload = () => {
+        if (mine !== latest) return;
+        overlay.setContent(img);
+        overlay.setPosition(middle);
+        overlay.setMap(m);
+        setCrimeError("");
+      };
+      img.onerror = () => {
+        if (mine !== latest) return;
+        overlay.setMap(null);
+        setCrimeError(MSG_CRIME_FAILED);
+      };
+      img.src = crimeOverlayUrl({
+        west: sw.getLng(),
+        south: sw.getLat(),
+        east: ne.getLng(),
+        north: ne.getLat(),
+        width,
+        height,
+      });
+    };
+    draw();
+    kakao.maps.event.addListener(m, "idle", draw);
+    return () => {
+      latest += 1;
+      kakao.maps.event.removeListener(m, "idle", draw);
+      overlay.setMap(null);
+      setCrimeError("");
+    };
+  }, [crime, ready]);
+
   return (
     <div className="kakao-map-wrap">
       <div ref={box} className="kakao-map" aria-label="지도" />
       {error && <div className="map-placeholder map-message">{error}</div>}
+      {crimeError && <p className="map-note">{crimeError}</p>}
     </div>
   );
 }
 
-function MapPin({ number, className }) {
+const MSG_CRIME_FAILED = "범죄주의구간 지도를 불러오지 못했어요. 지도를 조금 움직이면 다시 시도해요.";
+
+// 범죄주의구간 표시 여부를 먼저 묻고, 네라고 하면 표시한다. 색 설명·출처를 함께 보여준다
+function CrimeToggle({ value, onChange }) {
+  if (value === null) {
+    return (
+      <div className="map-ask">
+        <p>범죄주의구간을 지도에 표시할까요?</p>
+        <div>
+          <button onClick={() => onChange(true)}>네</button>
+          <button onClick={() => onChange(false)}>아니요</button>
+        </div>
+      </div>
+    );
+  }
+  if (!value) {
+    return (
+      <button className="map-ask map-ask-small" onClick={() => onChange(true)}>
+        범죄주의구간 보기
+      </button>
+    );
+  }
   return (
-    <span className={`map-pin ${className}`}>{number || <Icon name="location" size={15} />}</span>
+    <div className="map-ask">
+      <p>
+        <span className="crime-legend" /> 색이 진할수록 지난 1년 동안 범죄가 상대적으로 많이 난 길이에요. 지금 위험하다는
+        뜻은 아니에요.
+      </p>
+      <small>출처: 생활안전지도</small>
+      <div>
+        <button onClick={() => onChange(false)}>숨기기</button>
+      </div>
+    </div>
   );
 }
 
@@ -361,7 +402,7 @@ function Auth({ onLogin }) {
         <Icon name="island" size={34} />
       </div>
       <div className="auth-heading">
-        <span className="eyebrow">제주 여행 길잡이</span>
+        <span className="eyebrow">제주여지도</span>
         <h1>{signup ? "반가워요!" : "다시 만나 반가워요"}</h1>
         <p>
           {signup ? "간단히 가입하고 여행을 만들어 보세요." : "내 여행을 이어서 준비해 볼까요?"}
@@ -598,6 +639,7 @@ function Editor({ plannerId, onBack, onTravel }) {
   const [plans, setPlans] = useState({});
   const [planErrors, setPlanErrors] = useState({});
   const inflight = useRef(new Set());
+  const [crime, setCrime] = useState(null); // 범죄주의구간 표시: null = 아직 안 물어봄
 
   useEffect(() => {
     api
@@ -648,7 +690,14 @@ function Editor({ plannerId, onBack, onTravel }) {
       const sendable = places.map(({ source, ref, name, category }) =>
         source === "public" ? { source, ref, name, category } : { source, ref, name },
       );
-      await api.updatePlanner(plannerId, { title, start_date, end_date, places: sendable, route_choices });
+      await api.updatePlanner(plannerId, {
+        title,
+        start_date,
+        end_date,
+        places: sendable,
+        route_choices,
+        prefer_cctv: planner.prefer_cctv ?? null,
+      });
       if (version.current === sent) {
         setDirty(false);
         setSaved(true);
@@ -668,7 +717,7 @@ function Editor({ plannerId, onBack, onTravel }) {
   };
 
   const startTravel = async () => {
-    if (!dirty || (await save())) onTravel(planner);
+    if (!dirty || (await save())) onTravel(planner, { points: mapPoints, lines: routeLines });
   };
 
   const removePlace = (index) => {
@@ -685,12 +734,13 @@ function Editor({ plannerId, onBack, onTravel }) {
   });
   const segKey = (i) => {
     const [a, b] = [planner.places[i], planner.places[i + 1]];
-    return `${a.source}-${a.ref}>${b.source}-${b.ref}`;
+    // CCTV 선택이 바뀌면 다른 키가 되어 경로를 다시 계산한다
+    return `${a.source}-${a.ref}>${b.source}-${b.ref}${planner.prefer_cctv ? "+cctv" : ""}`;
   };
   const routeLines = (planner?.places || []).slice(0, -1).flatMap((_, i) => {
     const kind = planner.route_choices[i] || DEFAULT_ROUTE;
     const route = plans[segKey(i)]?.routes.find((r) => r.kind === kind);
-    return route?.found ? [{ key: segKey(i), kind, path: route.line }] : [];
+    return route?.found ? [{ key: segKey(i), kind, path: route.line, index: i }] : [];
   });
   // 위치를 아는 구간은 바로 계산해 둔다(다시 열었을 때도 고른 경로선이 보이게). 경로는 저장하지 않는다
   useEffect(() => {
@@ -700,7 +750,7 @@ function Editor({ plannerId, onBack, onTravel }) {
       if (!from || !to || plans[key] || planErrors[key] || inflight.current.has(key)) return;
       inflight.current.add(key);
       api
-        .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon })
+        .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }, Boolean(planner.prefer_cctv))
         .then((plan) => setPlans((all) => ({ ...all, [key]: plan })))
         .catch((e) => setPlanErrors((all) => ({ ...all, [key]: e.message })))
         .finally(() => inflight.current.delete(key));
@@ -729,7 +779,8 @@ function Editor({ plannerId, onBack, onTravel }) {
         }
       />
       <div className="editor-map">
-        <KakaoMap points={mapPoints} lines={routeLines} />
+        <KakaoMap points={mapPoints} lines={routeLines} crime={Boolean(crime)} />
+        <CrimeToggle value={crime} onChange={setCrime} />
       </div>
       <section className="itinerary">
         <div className="sheet-handle" />
@@ -776,6 +827,9 @@ function Editor({ plannerId, onBack, onTravel }) {
         {lookupFailed && <p className="empty-note">일부 장소의 위치를 불러오지 못했어요. 잠시 후 다시 열어 주세요.</p>}
         {planner.places.length === 0 && (
           <p className="empty-note">장소 추가를 눌러 가고 싶은 곳을 담아 보세요.</p>
+        )}
+        {planner.places.length > 1 && (
+          <CctvQuestion value={planner.prefer_cctv ?? null} onChange={(v) => update({ prefer_cctv: v })} />
         )}
         <div className="places-list">
           {planner.places.map((place, index) => (
@@ -859,6 +913,31 @@ function Editor({ plannerId, onBack, onTravel }) {
         />
       )}
     </main>
+  );
+}
+
+// "공개된 방범 CCTV가 근처에 있는 길로 안내할까요?" 네라고 하면 안전환경 우선 경로가 CCTV 근처 길도 따진다
+function CctvQuestion({ value, onChange }) {
+  if (value === null) {
+    return (
+      <div className="ask-card">
+        <p>공개된 방범 CCTV가 근처에 있는 길로 안내할까요?</p>
+        <div>
+          <button className="secondary-button" onClick={() => onChange(true)}>
+            네
+          </button>
+          <button className="secondary-button" onClick={() => onChange(false)}>
+            아니요
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <p className="ask-done">
+      {value ? "방범 CCTV가 근처에 있는 길도 따져서 안내해요." : "CCTV 위치는 따지지 않고 안내해요."}{" "}
+      <button onClick={() => onChange(!value)}>{value ? "끄기" : "켜기"}</button>
+    </p>
   );
 }
 
@@ -1034,9 +1113,33 @@ function Travel({ planner, stop, setStop, onBack, onChat }) {
   const places = planner.places;
   const next = places[Math.min(stop + 1, places.length - 1)];
   const finished = stop >= places.length - 1;
+  // 지금 구간(stop -> stop+1)의 핀과 고른 경로선만 보여준다
+  const points = (planner.map?.points || []).filter((p) => p.number === stop + 1 || p.number === stop + 2);
+  const given = (planner.map?.lines || []).find((l) => l.index === stop);
+  // 플래너에서 경로 계산이 끝나기 전에 여행을 시작했으면 여기서 계산한다(저장 안 함)
+  const [fetched, setFetched] = useState({});
+  const [from, to] = [stop + 1, stop + 2].map((n) => points.find((p) => p.number === n));
+  const kind = planner.route_choices[stop] || DEFAULT_ROUTE;
+  useEffect(() => {
+    if (given || !from || !to || stop in fetched) return;
+    let alive = true;
+    api
+      .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }, Boolean(planner.prefer_cctv))
+      .then((plan) => {
+        const route = plan.routes.find((r) => r.kind === kind);
+        if (alive) setFetched((f) => ({ ...f, [stop]: route?.found ? { key: `t${stop}`, kind, path: route.line } : null }));
+      })
+      .catch(() => alive && setFetched((f) => ({ ...f, [stop]: null })));
+    return () => {
+      alive = false;
+    };
+  }, [stop, given, from, to]); // eslint-disable-line react-hooks/exhaustive-deps
+  const line = given || fetched[stop];
   return (
     <main className="travel-screen">
-      <MapPlaceholder mode="travel" />
+      <div className="travel-map">
+        <KakaoMap points={points} lines={line && !finished ? [line] : []} />
+      </div>
       <div className="travel-topbar">
         <button className="map-round-button" onClick={onBack} aria-label="여행 나가기">
           <Icon name="close" />
@@ -1056,7 +1159,15 @@ function Travel({ planner, stop, setStop, onBack, onChat }) {
             <h2>{next.name}</h2>
           </div>
         </div>
-        <p>{finished ? "오늘의 모든 장소를 둘러봤어요." : "길 안내는 경로 계산을 연결한 뒤 보여드릴게요."}</p>
+        <p>
+          {finished
+            ? "오늘의 모든 장소를 둘러봤어요."
+            : line
+              ? "지도에 플래너에서 고른 길을 표시했어요."
+              : stop in fetched
+                ? "이 구간의 길을 계산하지 못했어요."
+                : "길을 계산하고 있어요…"}
+        </p>
         <div className="stop-controls">
           <button onClick={() => setStop(Math.max(0, stop - 1))} disabled={stop === 0}>
             <Icon name="back" size={18} /> 이전
@@ -1082,19 +1193,150 @@ function Travel({ planner, stop, setStop, onBack, onChat }) {
   );
 }
 
+const NEARBY_KINDS = [
+  { key: "toilet", label: "화장실" },
+  { key: "wifi", label: "무료 와이파이" },
+  { key: "police", label: "경찰서·지구대" },
+];
+const NEARBY_SHOWN = 5; // 서버 상한과 같게(api/app.py NEARBY_LIMIT)
+const GEOCODE_AT_ONCE = 8; // shortcut: 동시에 보내는 주소 검색 수(근거 없음), 느리면 조정
+const MSG_NO_LOCATION = "지금 위치를 알 수 없어요. 브라우저에서 위치 사용을 허용해 주세요.";
+const MSG_OUTSIDE_JEJU = "제주 안에서만 찾을 수 있어요.";
+
+function distanceM(a, b) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const h =
+    Math.sin(rad(b.lat - a.lat) / 2) ** 2 +
+    Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lon - a.lon) / 2) ** 2;
+  return 2 * 6371008.8 * Math.asin(Math.sqrt(h));
+}
+
+const formatDistance = (m) => (m >= 1000 ? `${(m / 1000).toFixed(1)}km` : `${Math.round(m)}m`);
+
+function myLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error(MSG_NO_LOCATION));
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      () => reject(new Error(MSG_NO_LOCATION)),
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
+  });
+}
+
+// 화장실 자료엔 위치가 없어 같은 읍면동 후보의 주소를 그때그때 카카오로 찾는다(결과는 저장하지 않음)
+// stillWanted(): 화면을 떠났거나 다른 검색을 시작했으면 false — 남은 주소 검색을 보내지 않는다
+async function nearbyToilets(me, stillWanted) {
+  const region = await regionOf(me.lat, me.lon);
+  if (!region) throw new Error(MSG_OUTSIDE_JEJU);
+  const candidates = await api.nearbyToilets(region.city, region.regions);
+  const found = [];
+  for (let i = 0; i < candidates.length; i += GEOCODE_AT_ONCE) {
+    if (!stillWanted()) return [];
+    const batch = candidates.slice(i, i + GEOCODE_AT_ONCE);
+    const spots = await Promise.all(
+      batch.map(async (t) => {
+        for (const address of t.addresses) {
+          const at = await geocode(address);
+          if (at) return at;
+        }
+        return null;
+      }),
+    );
+    batch.forEach((t, j) => spots[j] && found.push({ ...t, ...spots[j], distance_m: distanceM(me, spots[j]) }));
+  }
+  return found.sort((a, b) => a.distance_m - b.distance_m).slice(0, NEARBY_SHOWN);
+}
+
+function toiletNotes(t) {
+  return [
+    t.hours && `여는 시간 ${t.hours}`,
+    t.accessible && "장애인 화장실",
+    t.diaper && "기저귀 교환대",
+    t.bell && "비상벨",
+  ].filter(Boolean);
+}
+
 function Chat({ onBack }) {
+  const [kind, setKind] = useState(null);
+  const [me, setMe] = useState(null);
+  const [results, setResults] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const latest = useRef(0);
+  useEffect(() => () => void (latest.current += 1), []); // 화면을 떠나면 진행 중 검색을 멈춤
+
+  const find = async (key) => {
+    const mine = ++latest.current;
+    setKind(key);
+    setBusy(true);
+    setError("");
+    setResults(null);
+    try {
+      const here = await myLocation();
+      if (mine !== latest.current) return;
+      setMe(here);
+      const found =
+        key === "toilet"
+          ? await nearbyToilets(here, () => mine === latest.current)
+          : await api.nearby(key, here.lat, here.lon);
+      if (mine === latest.current) setResults(found);
+    } catch (e) {
+      // 서버가 제주 밖 좌표를 거절하면 입력 확인 문구가 오므로 제주 안내로 바꾼다
+      if (mine === latest.current) setError(e.status === 422 ? MSG_OUTSIDE_JEJU : e.message || MSG_SEARCH_FAILED);
+    } finally {
+      if (mine === latest.current) setBusy(false);
+    }
+  };
+
+  const label = NEARBY_KINDS.find((k) => k.key === kind)?.label;
+  const points = [
+    ...(me ? [{ key: "me", number: "나", name: "지금 위치", lat: me.lat, lon: me.lon }] : []),
+    ...(results || []).map((r, i) => ({ key: `r${i}`, number: i + 1, name: r.name, lat: r.lat, lon: r.lon })),
+  ];
+
   return (
     <main className="chat-screen">
       <AppHeader title="근처 찾기" back={onBack} />
+      {me && (
+        <div className="nearby-map">
+          <KakaoMap points={points} />
+        </div>
+      )}
       <section className="messages">
         <div className="agent-row">
           <span className="agent-avatar">
             <Icon name="spark" size={18} />
           </span>
-          <div className="message agent-message">
-            근처 화장실·약국 찾기를 준비하고 있어요. 공공데이터를 연결하면 바로 알려드릴게요.
-          </div>
+          <div className="message agent-message">무엇을 찾을까요? 지금 위치에서 가까운 곳을 알려드릴게요.</div>
         </div>
+        <div className="nearby-kinds">
+          {NEARBY_KINDS.map((k) => (
+            <button key={k.key} className={k.key === kind ? "active" : ""} onClick={() => find(k.key)} disabled={busy}>
+              {k.label}
+            </button>
+          ))}
+        </div>
+        {busy && <p className="result-count">찾는 중이에요…</p>}
+        <FormError message={error} />
+        {results && !busy && (
+          <div className="facility-list">
+            {results.length === 0 && <p className="empty-note">근처에서 {label}을 찾지 못했어요.</p>}
+            {results.map((r, i) => (
+              <div className="facility-card" key={`${r.name}-${i}`}>
+                <b>
+                  {i + 1}. {r.name}
+                </b>
+                <small>
+                  {[`약 ${formatDistance(r.distance_m)}`, r.detail, ...(kind === "toilet" ? toiletNotes(r) : [])]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </small>
+              </div>
+            ))}
+            {results.length > 0 && <p className="result-count">거리는 직선거리예요.</p>}
+          </div>
+        )}
       </section>
     </main>
   );
@@ -1113,7 +1355,7 @@ function DesktopNav({ screen, username, hasTrip, onNavigate, onLogout }) {
         <span>
           <Icon name="island" size={27} />
         </span>
-        <strong>제주로</strong>
+        <strong>제주여지도</strong>
       </button>
       <nav>
         {items.map((item) => (
@@ -1233,8 +1475,8 @@ export default function App() {
           <Editor
             plannerId={plannerId}
             onBack={() => setScreen("planners")}
-            onTravel={(planner) => {
-              setTrip(planner);
+            onTravel={(planner, map) => {
+              setTrip({ ...planner, map });
               setStop(0);
               setScreen("travel");
             }}

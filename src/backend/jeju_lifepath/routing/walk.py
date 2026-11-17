@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import threading
@@ -17,6 +19,7 @@ from itertools import pairwise
 from pathlib import Path
 
 import networkx as nx
+import numpy as np
 import shapely
 from shapely.geometry import LineString, box, shape
 
@@ -41,6 +44,14 @@ log = logging.getLogger(__name__)
 
 ORIGIN, DESTINATION = "출발", "도착"
 ZONES_SOURCE_ID = "accident_zones"
+CCTV_SOURCE_ID = "public_cctv"
+# 사용자가 "CCTV 근처 길"을 고르면,
+# 길에서 이 거리 안에 공개 방범 CCTV가 있으면 그 길을 CCTV 있는 길로 본다.
+# 근거: 강용길·염윤호(2020) CCTV 범죄예방 효과 분석의 영향 반경 100m. 사용자 승인(2026-11-17)
+CCTV_RADIUS_M = 100.0
+# 보행자 안전과 관련된 설치 목적만 쓴다
+# (교통단속·시설물관리·재난재해 등은 보행자 쪽을 비추지 않을 수 있음)
+CCTV_PURPOSES = frozenset({"생활방범", "어린이보호"})
 # 보행 경로라 자전거 사고 다발구역은 빼고,
 # 나머지(전체·보행노인·보행어린이·스쿨존어린이)는 모두 보행자에게 해당
 NON_PEDESTRIAN_KINDS = frozenset({"자전거"})
@@ -99,6 +110,39 @@ class AccidentZones:
         return self._tree is not None and len(self._tree.query(line, predicate="intersects")) > 0
 
 
+class CctvPoints:
+    """공개 CCTV 위치(UTM-K 미터 좌표). 길에서 CCTV_RADIUS_M 안에 있는지만 본다."""
+
+    def __init__(self, lonlats: list[tuple[float, float]]):
+        self.points_m = [shapely.Point(_TO_M.transform(lon, lat)) for lon, lat in lonlats]
+        self._tree = shapely.STRtree(self.points_m) if self.points_m else None
+
+    @classmethod
+    def from_csvs(cls, paths: list[Path]) -> CctvPoints | None:
+        """두 형식(cp949): 허브 510(설치목적·위도·경도),
+        표준데이터(설치목적구분·WGS84위도·WGS84경도)."""
+        seen: set[tuple[float, float]] = set()
+        for path in paths:
+            if not path.exists():
+                continue
+            for row in csv.DictReader(io.StringIO(path.read_bytes().decode("cp949"))):
+                purpose = row.get("설치목적구분") or row.get("설치목적")
+                lat = row.get("WGS84위도") or row.get("위도")
+                lon = row.get("WGS84경도") or row.get("경도")
+                if purpose in CCTV_PURPOSES and lat and lon:
+                    # 두 파일에 같은 곳이 있을 수 있어 좌표(약 1m 단위)로 겹침 제거
+                    seen.add((round(float(lon), 5), round(float(lat), 5)))
+        return cls(sorted(seen)) if seen else None
+
+    def near(self, line: LineString) -> bool:
+        if self._tree is None:
+            return False
+        line_m = shapely.transform(
+            line, lambda xy: np.column_stack(_TO_M.transform(xy[:, 0], xy[:, 1]))
+        )
+        return len(self._tree.query(line_m, predicate="dwithin", distance=CCTV_RADIUS_M)) > 0
+
+
 @dataclass(frozen=True)
 class _Piece:
     """잘라낸 망의 무방향 구간 하나(스냅으로 쪼갠 조각 포함)."""
@@ -115,9 +159,15 @@ def _length(coords) -> float:
 
 
 class WalkRouter:
-    def __init__(self, network: WalkNetwork, zones: AccidentZones | None):
+    def __init__(
+        self,
+        network: WalkNetwork,
+        zones: AccidentZones | None,
+        cctv: CctvPoints | None = None,
+    ):
         self.net = network
         self.zones = zones
+        self.cctv = cctv
         self._lock = threading.Lock()  # 기준 거리 계산 때 전체 그래프에 임시 노드를 붙였다 뗀다
 
     def _attach(self, snap: Snap, name: str) -> tuple[str, list[_Piece], tuple[float, float]]:
@@ -142,8 +192,10 @@ class WalkRouter:
         origin: tuple[float, float],
         destination: tuple[float, float],
         mobility: MobilityProfile = MobilityProfile.STANDARD,
+        prefer_cctv: bool = False,
     ) -> RoutePlan:
-        """origin/destination: (lon, lat)."""
+        """origin/destination: (lon, lat).
+        prefer_cctv: 사용자가 CCTV 근처 길 안내를 골랐을 때만 CCTV 지표를 넣는다."""
         so, sd = self.net.snap(*origin), self.net.snap(*destination)
         if so is None or sd is None:
             return RoutePlan(_unavailable(MSG_NOT_NEAR_ROAD))
@@ -180,7 +232,7 @@ class WalkRouter:
         limit = baseline * (1 + DETOUR_RATIO_POLICY_MAX)
         crop = self._crop(o_at, d_at, limit, replaced) + pieces
 
-        graph = PedestrianGraph(self._edges(crop))
+        graph = PedestrianGraph(self._edges(crop, prefer_cctv and self.cctv is not None))
         req = RouteRequest(
             origin=o_node,
             destination=d_node,
@@ -240,9 +292,10 @@ class WalkRouter:
                 out.append(_Piece(s.seg_id, s.u, s.v, s.coords, s.steps))
         return out
 
-    def _edges(self, pieces: list[_Piece]) -> list[RoadEdge]:
+    def _edges(self, pieces: list[_Piece], use_cctv: bool = False) -> list[RoadEdge]:
         edges = []
-        sources = (SOURCE_ID, ZONES_SOURCE_ID) if self.zones else (SOURCE_ID,)
+        sources = (SOURCE_ID,) + ((ZONES_SOURCE_ID,) if self.zones else ())
+        sources += (CCTV_SOURCE_ID,) if use_cctv else ()
         for p in pieces:
             length = _length(p.coords)
             if length <= 0:
@@ -250,6 +303,8 @@ class WalkRouter:
             exposure = (
                 (1.0 if self.zones.touches(LineString(p.coords)) else 0.0) if self.zones else None
             )
+            # CCTV 자료는 제주 전역 공개 목록이라 0은 "반경 안에 공개 방범 CCTV 없음"이라는 관측값
+            cctv = (1.0 if self.cctv.near(LineString(p.coords)) else 0.0) if use_cctv else None
             for suffix, u, v, coords in (
                 ("f", p.u, p.v, p.coords),
                 ("r", p.v, p.u, p.coords[::-1]),
@@ -262,6 +317,7 @@ class WalkRouter:
                         geometry=list(coords),
                         length_m=length,
                         traffic_exposure=exposure,
+                        cctv_index=cctv,
                         # 계단은 확인된 장벽, 나머지는 확인 안 됨(일반 보행자에겐 둘 다 통과)
                         accessibility=Passability.BLOCK if p.steps else Passability.UNKNOWN,
                         source_ids=sources,

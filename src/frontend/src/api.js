@@ -39,5 +39,14 @@ export const api = {
   updatePlanner: (id, planner) => request("PUT", `/planners/${id}`, planner),
   deletePlanner: (id) => request("DELETE", `/planners/${id}`),
   // 경로 계산용 임시 좌표(저장 안 함)
-  compareRoutes: (origin, destination) => request("POST", "/routes/compare", { origin, destination }),
+  compareRoutes: (origin, destination, preferCctv = false) =>
+    request("POST", "/routes/compare", { origin, destination, prefer_cctv: preferCctv }),
+  // 근처 시설. 화장실은 좌표 없는 후보(이름·주소)만 오고, 위치는 화면이 그때그때 찾는다
+  nearbyToilets: (city, regions) =>
+    request("GET", `/nearby/toilets?${new URLSearchParams([["city", city], ...regions.map((r) => ["region", r])])}`),
+  nearby: (kind, lat, lon) => request("GET", `/nearby/${kind}?${new URLSearchParams({ lat, lon })}`),
 };
+
+// 범죄주의구간 지도 그림 주소(지금 보이는 지도 사각형·픽셀 크기). 서버가 키를 숨기고 대신 받아 준다
+export const crimeOverlayUrl = ({ west, south, east, north, width, height }) =>
+  `/api/overlays/crime?${new URLSearchParams({ west, south, east, north, width, height })}`;

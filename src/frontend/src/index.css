@@ -2211,3 +2211,144 @@
   position: absolute;
   inset: 0;
 }
+
+/* 범죄주의구간 겹쳐 보기 · CCTV 질문 · 근처 찾기 */
+.editor-map {
+  position: relative;
+}
+.crime-overlay {
+  display: block;
+  opacity: 0.75;
+  pointer-events: none;
+}
+.map-ask {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 3;
+  padding: 10px 12px;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.map-ask small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+.map-ask div {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.map-ask button {
+  padding: 4px 14px;
+  color: var(--sea-800);
+  border: 1.5px solid var(--sea-700);
+  border-radius: 10px;
+  font-weight: 700;
+}
+.map-ask-small {
+  left: auto;
+  padding: 6px 12px;
+  color: var(--sea-800);
+  font-weight: 700;
+}
+.crime-legend {
+  display: inline-block;
+  width: 42px;
+  height: 8px;
+  vertical-align: middle;
+  border-radius: 4px;
+  /* 생활안전지도 범례 1등급 #ffffb2 ~ 10등급 #bd0026 */
+  background: linear-gradient(90deg, #ffffb2, #fd8d3c, #bd0026);
+}
+.map-note {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 30px;
+  z-index: 3;
+  padding: 8px 12px;
+  color: #a34438;
+  background: #fdf0ee;
+  border-radius: 12px;
+  font-size: 12px;
+}
+.ask-card {
+  margin-bottom: 14px;
+  padding: 14px;
+  background: var(--sea-50);
+  border-radius: 16px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.ask-card div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ask-card .secondary-button {
+  height: 42px;
+}
+.ask-done {
+  margin-bottom: 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.ask-done button {
+  color: var(--sea-700);
+  font-weight: 800;
+  text-decoration: underline;
+}
+.nearby-map {
+  height: 280px;
+}
+.nearby-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0 40px;
+}
+.nearby-kinds button {
+  padding: 8px 14px;
+  color: var(--sea-800);
+  background: white;
+  border: 1.5px solid var(--sea-700);
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 700;
+}
+.nearby-kinds button.active {
+  color: white;
+  background: var(--sea-800);
+}
+.facility-card b,
+.facility-card small {
+  display: block;
+}
+.facility-card small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 여행 화면 실제 지도 · 플래너 지도 질문 위치(폰에서는 위 제목 줄 아래로) */
+.travel-map {
+  position: absolute;
+  inset: 0;
+}
+.editor-screen .map-ask {
+  top: 76px;
+}
+@media (min-width: 1024px) {
+  .editor-screen .map-ask {
+    top: 12px;
+  }
+}

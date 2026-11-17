@@ -99,6 +99,7 @@ def render_comparison(
 SOURCE_NAMES = {
     "osm:jeju_highways": "오픈스트리트맵 도로",
     "accident_zones": "교통사고 다발구역(도로교통공단·공공데이터포털)",
+    "public_cctv": "공개 방범·어린이보호 CCTV(제주데이터허브·공공데이터포털)",
 }
 
 
