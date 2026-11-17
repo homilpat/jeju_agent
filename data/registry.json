@@ -1,0 +1,153 @@
+{
+  "records": [
+    {
+      "ingested_at": "2026-11-16T16:08:47.301007Z",
+      "processed_file": "processed/hub-accident-hotspots.geojson",
+      "processed_sha256": "d3682d4f1b618db34916d83b0317d440ba65273a1bfd5ca2489a3fdedd388e07",
+      "raw_file": "private/raw/hub_accident_hotspots.csv",
+      "raw_sha256": "c2b980f700101ba4231c1d222916efeed2681a634492cba78fe694053965a32c",
+      "spec": {
+        "collected_on": "2026-11-17",
+        "columns": {
+          "attributes": {
+            "accidents": "occurrenceCount",
+            "casualties": "deathInjuryCount",
+            "deaths": "deathCount",
+            "place": "occurrencePlace",
+            "serious": "seriouslyInjuryCount"
+          },
+          "id_column": null,
+          "x_column": "longitude",
+          "y_column": "latitude"
+        },
+        "crs": "EPSG:4326",
+        "dataset_id": "hub-accident-hotspots",
+        "encoding": null,
+        "kind": "points",
+        "license": "미확인 - 제주데이터허브 이용약관 확인 필요",
+        "notes": [
+          "수집기간 2017-01-01~2023-12-31(허브 목록 기준), 연도별 구분 항목 없음",
+          "제주 전체 42곳"
+        ],
+        "origin": "OFFICIAL_JEJU",
+        "publisher": "제주데이터허브(제주특별자치도)",
+        "reference_date": null,
+        "source_url": "https://www.jejudatahub.net/",
+        "title": "교통사고 다발지역 정보(허브 493)"
+      },
+      "stats": {
+        "encoding_used": "utf-8-sig",
+        "in_region_ratio": 1.0,
+        "missing_rates": {
+          "deathCount": 0.0,
+          "deathInjuryCount": 0.0,
+          "latitude": 0.0,
+          "longitude": 0.0,
+          "occurrenceCount": 0.0,
+          "occurrencePlace": 0.0,
+          "seriouslyInjuryCount": 0.0
+        },
+        "region": "jeju_province",
+        "rejected": {},
+        "row_count": 42,
+        "valid_count": 42
+      }
+    },
+    {
+      "ingested_at": "2026-11-16T16:40:01.385024Z",
+      "processed_file": "processed/hub-wifi.geojson",
+      "processed_sha256": "7a0bca92d574652a7ce8a9789a6be9b86e3b288aece1eee76b6b6fbc29029b4c",
+      "raw_file": "private/raw/hub_wifi.csv",
+      "raw_sha256": "0bb3074b76fe0d02e1c3aabdb22749b58b6962390bd149758ccf3dfd51b56234",
+      "spec": {
+        "collected_on": "2026-11-17",
+        "columns": {
+          "attributes": {
+            "category": "category",
+            "place": "apGroupName"
+          },
+          "id_column": null,
+          "x_column": "longitude",
+          "y_column": "latitude"
+        },
+        "crs": "EPSG:4326",
+        "dataset_id": "hub-wifi",
+        "encoding": null,
+        "kind": "points",
+        "license": "미확인 - 제주데이터허브 이용약관 확인 필요",
+        "notes": [
+          "날짜별 스냅샷 중 가장 최근 날짜만 받음",
+          "한 장소에 AP 여러 대 → 같은 좌표 중복 있음",
+          "현재 파일은 한 번만 받은 판으로 줄 중복·누락 있음(허브 페이지 순서 불안정). valid_count는 좌표가 유효한 줄 수이지 고유 AP 수가 아님"
+        ],
+        "origin": "OFFICIAL_JEJU",
+        "publisher": "제주데이터허브(제주특별자치도)",
+        "reference_date": "2026-11-15",
+        "source_url": "https://www.jejudatahub.net/",
+        "title": "공공와이파이 AP 정보(허브 720)"
+      },
+      "stats": {
+        "encoding_used": "utf-8-sig",
+        "in_region_ratio": 1.0,
+        "missing_rates": {
+          "apGroupName": 0.0,
+          "category": 0.0,
+          "latitude": 0.0,
+          "longitude": 0.0
+        },
+        "region": "jeju_province",
+        "rejected": {},
+        "row_count": 3141,
+        "valid_count": 3141
+      }
+    },
+    {
+      "ingested_at": "2026-11-16T16:08:48.369794Z",
+      "processed_file": "processed/safemap-police.geojson",
+      "processed_sha256": "702500e47466b2705b34050187b5cd4ffbe74a9a41b50dc90cc105266875d949",
+      "raw_file": "private/raw/safemap_police.csv",
+      "raw_sha256": "2f9aa6a4f7ffb38c89cb48388a04711f2473aca749e7e52cce6ce6254fa3bc9a",
+      "spec": {
+        "collected_on": "2026-11-17",
+        "columns": {
+          "attributes": {
+            "kind": "fclty_ty",
+            "name": "fclty_nm"
+          },
+          "id_column": null,
+          "x_column": "x",
+          "y_column": "y"
+        },
+        "crs": "EPSG:3857",
+        "dataset_id": "safemap-police",
+        "encoding": null,
+        "kind": "points",
+        "license": "공공누리 4유형(출처표시, 상업적 이용 금지, 변경 금지)",
+        "notes": [
+          "전국 자료에서 시도코드 50(제주)만 남김",
+          "좌표계는 값 크기로 판단한 EPSG:3857"
+        ],
+        "origin": "OFFICIAL_NATIONAL",
+        "publisher": "행정안전부 생활안전지도(경찰청 제공)",
+        "reference_date": null,
+        "source_url": "https://www.safemap.go.kr/opna/data/dataViewRenew.do?objtId=142",
+        "title": "치안시설(경찰관서)"
+      },
+      "stats": {
+        "encoding_used": "utf-8-sig",
+        "in_region_ratio": 1.0,
+        "missing_rates": {
+          "fclty_nm": 0.0,
+          "fclty_ty": 0.0,
+          "x": 0.0,
+          "y": 0.0
+        },
+        "region": "jeju_province",
+        "rejected": {},
+        "row_count": 42,
+        "valid_count": 42
+      }
+    }
+  ],
+  "schema_version": 1
+}

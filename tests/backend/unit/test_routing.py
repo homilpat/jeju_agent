@@ -3,7 +3,7 @@
 import pytest
 
 from jeju_lifepath.geo.graph import PedestrianGraph
-from jeju_lifepath.routing.optimizer import NO_DATA_Q, compare_routes, find_route
+from jeju_lifepath.routing.optimizer import SPEED_M_PER_MIN, compare_routes, find_route
 from jeju_lifepath.schemas import (
     GeoPoint,
     Passability,
@@ -27,12 +27,16 @@ def req(o="A", d="C", pref="SHORTEST", detour_ratio=0.2, **kw):
 
 @pytest.fixture
 def two_way():
-    """S-X-T: 200 m, no indicator data / S-Y-T: 220 m, CCTV high."""
+    """S-X-T: 200 m, no data / S-Y-T: 220 m, CCTV high / S-Z-T: 300 m, CCTV none.
+
+    Observed mean q = 300/520, so the data-less S-X-T is imputed with that, not 0.
+    """
     nodes = {
         "S": (126.530, 33.5),
         "X": (126.531, 33.5),
         "T": (126.532, 33.5),
         "Y": (126.531, 33.5005),
+        "Z": (126.531, 33.4995),
     }
 
     def e(eid, u, v, length, **kw):
@@ -53,6 +57,8 @@ def two_way():
             e("xt", "X", "T", 100),
             e("sy", "S", "Y", 110, cctv_index=1.0),
             e("yt", "Y", "T", 110, cctv_index=1.0),
+            e("sz", "S", "Z", 150, cctv_index=0.0),
+            e("zt", "Z", "T", 150, cctv_index=0.0),
         ]
     )
 
@@ -106,7 +112,7 @@ def test_detour_cap_enforced(two_way):
     r = find_route(two_way, req("S", "T", "SAFETY", detour_ratio=0.05))
     assert r.route_edge_ids == ("sx", "xt")
     assert r.length_m <= r.shortest_feasible_m * 1.05
-    assert r.indicator_breakdown["adverse_q"] == pytest.approx(NO_DATA_Q)
+    assert r.indicator_breakdown["adverse_q"] == pytest.approx(300 / 520)
     assert r.coverage["indicator_coverage"] == 0.0
 
 
@@ -125,7 +131,7 @@ def test_deterministic(two_way):
 def test_result_records_provenance_and_weights():
     r = find_route(build_graph(), req())
     assert r.provenance == (SYNTHETIC_SOURCE_ID,)
-    assert r.weights_version == "provisional-v0"
+    assert r.weights_version == "provisional-v1"
 
 
 def test_validator_catches_violations():
@@ -170,3 +176,27 @@ def test_caveats_have_no_internal_values(two_way):
     for r in all_results(two_way):
         for c in r.caveats:
             assert_user_text(c)
+
+
+def test_parallel_edges_are_distinct_candidates():
+    # Two parallel A->B edges: the shorter one must be usable even if it costs more.
+    g = build_graph({"A-B": {"cctv_index": 0.0}})
+    alt = make_edge("A-B-alt", "A", "B", length_m=200, cctv_index=1.0)
+    g2 = PedestrianGraph([*g.edges(), alt])
+    r = find_route(g2, req(pref="SAFETY", detour_ratio=0.0))
+    assert r.route_edge_ids[0] == "A-B"  # longer parallel edge would break the 0% cap
+
+
+def test_speed_depends_on_profile():
+    g = build_graph()
+    std = find_route(g, req())
+    wc = find_route(g, req(mobility_profile="WHEELCHAIR"))
+    assert std.estimated_minutes == round(std.length_m / SPEED_M_PER_MIN["STANDARD"], 1)
+    assert wc.estimated_minutes > std.estimated_minutes
+
+
+def test_internal_ids_never_in_user_text(two_way):
+    graph_ids = {e.edge_id for e in two_way.edges()} | set(two_way.node_ids)
+    for r in all_results(two_way):
+        for c in r.caveats:
+            assert not any(f" {i} " in f" {c} " for i in graph_ids), c

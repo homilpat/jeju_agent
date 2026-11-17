@@ -1,0 +1,25 @@
+{
+  "dataset_id": "hub-accident-hotspots",
+  "collected_on": "2026-11-17",
+  "origin": "OFFICIAL_JEJU",
+  "publisher": "제주데이터허브(제주특별자치도)",
+  "source_url": "https://www.jejudatahub.net/",
+  "license": "미확인 - 제주데이터허브 이용약관 확인 필요",
+  "title": "교통사고 다발지역 정보(허브 493)",
+  "crs": "EPSG:4326",
+  "columns": {
+    "x_column": "longitude",
+    "y_column": "latitude",
+    "attributes": {
+      "place": "occurrencePlace",
+      "accidents": "occurrenceCount",
+      "casualties": "deathInjuryCount",
+      "deaths": "deathCount",
+      "serious": "seriouslyInjuryCount"
+    }
+  },
+  "notes": [
+    "수집기간 2017-01-01~2023-12-31(허브 목록 기준), 연도별 구분 항목 없음",
+    "제주 전체 42곳"
+  ]
+}

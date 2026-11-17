@@ -1,0 +1,22 @@
+{
+  "dataset_id": "safemap-police",
+  "collected_on": "2026-11-17",
+  "origin": "OFFICIAL_NATIONAL",
+  "publisher": "행정안전부 생활안전지도(경찰청 제공)",
+  "source_url": "https://www.safemap.go.kr/opna/data/dataViewRenew.do?objtId=142",
+  "license": "공공누리 4유형(출처표시, 상업적 이용 금지, 변경 금지)",
+  "title": "치안시설(경찰관서)",
+  "crs": "EPSG:3857",
+  "columns": {
+    "x_column": "x",
+    "y_column": "y",
+    "attributes": {
+      "name": "fclty_nm",
+      "kind": "fclty_ty"
+    }
+  },
+  "notes": [
+    "전국 자료에서 시도코드 50(제주)만 남김",
+    "좌표계는 값 크기로 판단한 EPSG:3857"
+  ]
+}

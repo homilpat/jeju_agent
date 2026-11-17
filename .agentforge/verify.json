@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0.0",
+  "setup": [
+    "uv pip install --system -r requirements.txt"
+  ],
+  "checks": [
+    "python3 -m ruff check . --exclude .agentforge",
+    "python3 -m pytest -q --confcutdir=. --ignore=.agentforge -o cache_dir=/dev/null"
+  ],
+  "timeout_seconds": 120
+}

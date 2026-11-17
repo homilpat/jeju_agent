@@ -1,0 +1,22 @@
+{
+  "dataset_id": "hub-pharmacies",
+  "collected_on": "2026-11-17",
+  "origin": "OFFICIAL_JEJU",
+  "publisher": "제주데이터허브(제주특별자치도)",
+  "source_url": "https://www.jejudatahub.net/",
+  "license": "미확인 - 제주데이터허브 이용약관 확인 필요",
+  "title": "약국 정보(허브 495)",
+  "reference_date": "2025-09-18",
+  "crs": "EPSG:4326",
+  "columns": {
+    "x_column": "longitude",
+    "y_column": "latitude",
+    "attributes": {
+      "name": "companyName"
+    }
+  },
+  "notes": [
+    "영업/정상만 남김",
+    "원자료에 좌표 없음. 카카오 로컬 API 좌표는 저장 금지라 쓰지 않음 → 공공기관 지오코더로 좌표를 붙인 뒤 수집해야 함(아직 안 함)"
+  ]
+}

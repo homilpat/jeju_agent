@@ -18,3 +18,7 @@ history.json
 usage.json
 ci.json
 graphy-out/
+
+# Daker 배포 제한 자료 (커밋 금지)
+/*.xlsx
+node_modules/
