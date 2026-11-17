@@ -51,8 +51,11 @@ export const api = {
   agentMessage: (body) => request("POST", "/agent/messages", body),
   agentCancel: (runId) => request("POST", `/agent/runs/${encodeURIComponent(runId)}/cancel`),
   agentRun: (runId) => request("GET", `/agent/runs/${encodeURIComponent(runId)}`),
-  agentResume: (runId, location) =>
-    request("POST", `/agent/runs/${encodeURIComponent(runId)}/resume`, { location: location || null }),
+  agentResume: (runId, location, mapView) =>
+    request("POST", `/agent/runs/${encodeURIComponent(runId)}/resume`, {
+      location: location || null,
+      map_view: mapView || null,
+    }),
   agentConversation: (id) => request("GET", `/agent/conversations/${encodeURIComponent(id)}`),
 };
 

@@ -1,8 +1,8 @@
 {
   "version": "agent-policy-2026-11-18-provisional",
-  "_note": "모든 숫자는 근거 없는 잠정 운영값이다(docs/development/open-decisions.md). 실측 후 조정한다.",
-  "deadline_s": 60,
-  "max_tool_calls": 40,
+  "_note": "deadline_s·max_tool_calls는 실측 최대치의 2배(2026-11-18, docs/development/open-decisions.md). 나머지는 잠정값.",
+  "deadline_s": 41,
+  "max_tool_calls": 22,
   "max_llm_calls": 2,
   "max_replans": 2,
   "max_same_failure": 2,
@@ -14,7 +14,6 @@
   "widened_radius_m": 5000,
   "max_stops": 6,
   "trace_retention_days": 7,
-  "history_turns": 20,
   "llm": {
     "base_url": "https://api.meta.ai/v1",
     "model": "muse-spark-1.3",

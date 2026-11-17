@@ -20,7 +20,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from jeju_lifepath.agent.models import ParseResult, ToolError
-from jeju_lifepath.agent.parse import FACILITIES, THEMES
+from jeju_lifepath.agent.parse import FACILITIES, NOT_PLACE, THEMES
 
 SYSTEM_PROMPT = """너는 제주 도보 여행 도우미의 요청 해석기다. 사용자 문장 하나를 읽고 JSON 하나만 출력한다.
 설명·코드블록 없이 JSON만. 형식:
@@ -125,8 +125,12 @@ def llm_parse(llm: LLM, text: str, rules: ParseResult) -> ParseResult:
     """LLM 해석을 규칙 해석 위에 겹친다. 검증에 실패하면 ValueError(호출 쪽이 규칙 결과를 씀)."""
     data = _json_block(llm.complete(SYSTEM_PROMPT, text))
 
-    def grounded(value) -> str | None:  # 사용자 문장에 실제로 있는 말만
-        return value if isinstance(value, str) and value and value in text else None
+    def grounded(value) -> str | None:
+        """사용자 문장에 실제로 있는 말만. '약국'·'카페'처럼 종류 이름은 지명·장소 이름으로
+        받지 않는다(실 LLM이 가끔 '근처 약국'의 '약국'을 장소 이름으로 돌려줌, 2026-11-18 평가)."""
+        if not (isinstance(value, str) and value and value in text):
+            return None
+        return None if value in FACILITIES or value in THEMES or value in NOT_PLACE else value
 
     slots = rules.slots.model_copy()
     sources = dict(rules.slot_sources)

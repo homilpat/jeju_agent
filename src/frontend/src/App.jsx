@@ -163,8 +163,11 @@ function Icon({ name, size = 20, strokeWidth = 2 }) {
 // 카카오 지도에 장소 핀을 일정 번호와 함께 찍는다. 경로 선은 경로 계산을 붙인 뒤에 그린다.
 // points: [{ key, number, name, lat, lon }], lines: [{ key, kind, path: [[lat, lon], ...] }]
 // crime: 사용자가 "범죄주의구간 표시"에 네라고 했을 때만 생활안전지도 그림을 겹친다
-function KakaoMap({ points, lines = [], crime = false }) {
+// onView: 지도를 움직일 때마다 지금 보이는 범위 {center, south, west, north, east}를 알려 준다
+function KakaoMap({ points, lines = [], crime = false, onView }) {
   const box = useRef(null);
+  const viewCallback = useRef(onView);
+  viewCallback.current = onView;
   const map = useRef(null);
   const overlays = useRef([]);
   const [error, setError] = useState("");
@@ -221,6 +224,26 @@ function KakaoMap({ points, lines = [], crime = false }) {
       alive = false;
     };
   }, [pointsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!ready) return undefined;
+    const kakao = window.kakao;
+    const m = map.current;
+    const report = () => {
+      const b = m.getBounds();
+      const [sw, ne, c] = [b.getSouthWest(), b.getNorthEast(), m.getCenter()];
+      viewCallback.current?.({
+        center: { lat: c.getLat(), lon: c.getLng() },
+        south: sw.getLat(),
+        west: sw.getLng(),
+        north: ne.getLat(),
+        east: ne.getLng(),
+      });
+    };
+    report();
+    kakao.maps.event.addListener(m, "idle", report);
+    return () => kakao.maps.event.removeListener(m, "idle", report);
+  }, [ready]);
 
   // 지도를 멈출 때마다 지금 보이는 사각형만큼 그림 한 장을 받아 화면 가운데에 맞춰 붙인다.
   // 카카오 지도와 같은 좌표계로 받으므로 늘이거나 줄이지 않고 그대로 맞는다
@@ -626,7 +649,7 @@ function RouteCard({ index, active, onChoose, onOpen }) {
   );
 }
 
-function Editor({ plannerId, onBack, onTravel }) {
+function Editor({ plannerId, onBack, onTravel, onOpenPlanner }) {
   const [sheet, setSheet] = useState("none");
   const [planner, setPlanner] = useState(null);
   const [saved, setSaved] = useState(false);
@@ -643,6 +666,21 @@ function Editor({ plannerId, onBack, onTravel }) {
   const [planErrors, setPlanErrors] = useState({});
   const inflight = useRef(new Set());
   const [crime, setCrime] = useState(null); // 범죄주의구간 표시: null = 아직 안 물어봄
+  const [aiOpen, setAiOpen] = useState(false);
+  const [view, setView] = useState(null); // 지금 보이는 지도(AI에게 같이 보냄)
+  const [aiMap, setAiMap] = useState({ points: [], lines: [] }); // AI가 찾은 곳(일정에 넣기 전)
+  const [aiChanged, setAiChanged] = useState(false); // AI가 고쳤는데 손으로 고친 내용과 겹침
+  const sentAt = useRef(0); // AI에게 보낼 때의 수정 횟수
+  const reloadPlanner = () =>
+    api
+      .getPlanner(plannerId)
+      .then((p) => {
+        version.current += 1;
+        setPlanner(p);
+        setDirty(false);
+        setAiChanged(false);
+      })
+      .catch((e) => setError(e.message));
 
   useEffect(() => {
     api
@@ -785,7 +823,12 @@ function Editor({ plannerId, onBack, onTravel }) {
         }
       />
       <div className="editor-map">
-        <KakaoMap points={mapPoints} lines={routeLines} crime={Boolean(crime)} />
+        <KakaoMap
+          points={[...mapPoints, ...aiMap.points.map((p, i) => ({ ...p, number: `후보${i + 1}` }))]}
+          lines={[...routeLines, ...aiMap.lines]}
+          crime={Boolean(crime)}
+          onView={setView}
+        />
         <CrimeToggle value={crime} onChange={setCrime} />
       </div>
       <section className="itinerary">
@@ -880,6 +923,40 @@ function Editor({ plannerId, onBack, onTravel }) {
         <button className="add-place-button" onClick={() => setSheet("search")}>
           <Icon name="plus" /> 장소 추가
         </button>
+        <button className="add-place-button" onClick={() => setAiOpen(!aiOpen)}>
+          <Icon name="spark" /> {aiOpen ? "AI 닫기" : "AI와 지도 보면서 같이 짜기"}
+        </button>
+        {aiChanged && (
+          <p className="empty-note">
+            AI가 일정을 고쳤는데, 그사이 직접 고친 내용이 있어요.{" "}
+            <button className="text-button" onClick={reloadPlanner}>
+              AI가 고친 일정 불러오기
+            </button>{" "}
+            (직접 고친 내용은 사라져요)
+          </p>
+        )}
+        {aiOpen && (
+          <AgentPanel
+            inline
+            tripId={plannerId}
+            view={view}
+            storageKey={`jeju-agent-trip-${plannerId}`}
+            beforeSend={async () => {
+              if (dirty && !(await save())) return false;
+              sentAt.current = version.current;
+              return true;
+            }}
+            onOpenPlanner={onOpenPlanner}
+            onReply={(reply) => {
+              setAiMap(reply.itinerary ? { points: [], lines: [] } : replyMap(reply));
+              if (reply.trip_id === plannerId && reply.trip_version && reply.trip_version !== planner.version) {
+                // AI가 이 여행을 고쳤다. 기다리는 동안 손으로 고친 게 있으면 덮지 않고 고르게 한다
+                if (version.current === sentAt.current) reloadPlanner();
+                else setAiChanged(true);
+              }
+            }}
+          />
+        )}
         <div className="editor-actions">
           <button className="secondary-button" onClick={save} disabled={saving}>
             <Icon name="check" /> {saved ? "저장했어요" : "저장"}
@@ -1214,17 +1291,17 @@ function myLocation() {
   });
 }
 
-function readConversation() {
+function readConversation(key) {
   try {
-    return sessionStorage.getItem(CONV_KEY);
+    return sessionStorage.getItem(key);
   } catch {
     return null;
   }
 }
 
-function saveConversation(id) {
+function saveConversation(key, id) {
   try {
-    sessionStorage.setItem(CONV_KEY, id);
+    sessionStorage.setItem(key, id);
   } catch {
     // 저장이 막혀 있으면 새로고침 때 대화가 이어지지 않을 뿐이다
   }
@@ -1233,16 +1310,18 @@ function saveConversation(id) {
 const newId = () =>
   globalThis.crypto?.randomUUID?.() || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
 
-const RUN_POLL_MS = 2000; // shortcut: 근거 없는 확인 간격, 서버 실행 제한(60초)에 맞춰 조정
-const RUN_POLL_TRIES = 40;
+// 2초마다 최대 30번(60초): 서버 실행 제한 41초(configs/agent_policy.json)보다 길게 기다린다.
+// shortcut: 2초 간격 자체는 근거 없음(서버 부담과 기다림 사이 짐작)
+const RUN_POLL_MS = 2000;
+const RUN_POLL_TRIES = 30;
 
 // 같은 메시지가 아직 처리 중이면 끝날 때까지 기다린다. 서버가 꺼졌다 켜져 멈춘 실행이면 이어서 한다
-async function waitForRun(runId, location) {
+async function waitForRun(runId, location, view) {
   for (let i = 0; i < RUN_POLL_TRIES; i += 1) {
     await new Promise((r) => setTimeout(r, RUN_POLL_MS));
     const run = await api.agentRun(runId);
     if (run.response && !run.response.still_running) return run.response;
-    if (run.stage === "interrupted") return api.agentResume(runId, location);
+    if (run.stage === "interrupted") return api.agentResume(runId, location, view);
   }
   throw new Error("답이 너무 오래 걸려요. 잠시 후 다시 물어봐 주세요.");
 }
@@ -1311,7 +1390,7 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
               {it.back_minutes != null ? ` 약 ${it.back_minutes}분` : ""} · 모두 약 {it.total_minutes}분
             </p>
           )}
-          {reply.trip_id && reply.status === "ok" && (
+          {onOpenPlanner && reply.trip_id && reply.status === "ok" && (
             <button className="primary-button" onClick={() => onOpenPlanner(reply.trip_id)}>
               내 여행에서 열기
             </button>
@@ -1348,9 +1427,14 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
   );
 }
 
-// 자연어 하나로 안내·경로·일정 만들기/고치기. 무엇을 할지는 서버 Agent가 정한다
-function Chat({ onBack, tripId, onOpenPlanner }) {
-  const [conversation, setConversation] = useState(readConversation);
+// 제주 안에서만 보낸다(서버도 확인). 지도가 아직 안 떴으면 null
+const inJejuView = (v) =>
+  v && v.center.lat >= 33 && v.center.lat <= 34.05 && v.center.lon >= 125.9 && v.center.lon <= 127 ? v : null;
+
+// AI와 대화하는 칸. 지금 보이는 지도(view)를 함께 보내 AI가 같은 지도를 보고 답한다.
+// tripId: 지금 열어 둔 여행(플래너에서 같이 짤 때). onReply: 답마다 부름(지도 갱신용)
+function AgentPanel({ tripId, view, storageKey, beforeSend, onReply, onOpenPlanner, inline = false }) {
+  const [conversation, setConversation] = useState(() => readConversation(storageKey));
   const [log, setLog] = useState([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1370,22 +1454,35 @@ function Chat({ onBack, tripId, onOpenPlanner }) {
       .catch(() => setConversation(null)); // 지난 대화가 없거나 만료됨: 새로 시작
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [log, busy]);
+  useEffect(() => {
+    if (!inline) bottom.current?.scrollIntoView({ block: "end" });
+  }, [log, busy, inline]);
 
   const send = async (said, location = here) => {
     const message = said.trim();
     if (!message || busy) return;
+    setBusy(true); // 저장을 기다리는 동안에도 다시 보내지 못하게
+    if (beforeSend && !(await beforeSend())) {
+      setBusy(false); // 플래너: 저장하지 않은 수정이 있으면 먼저 저장, 실패하면 보내지 않음
+      return;
+    }
     const id = newId();
     running.current = id;
-    setBusy(true);
     setError("");
     setText("");
     setLog((l) => [...l, { role: "user", text: message }]);
     // 대화 번호는 화면이 먼저 만들어 저장한다: 답을 받기 전에 새로고침해도 같은 대화로 이어진다
     const conv = conversation || newId();
     setConversation(conv);
-    saveConversation(conv);
-    const body = { message_id: id, conversation_id: conv, text: message, location, trip_id: activeTrip };
+    saveConversation(storageKey, conv);
+    const body = {
+      message_id: id,
+      conversation_id: conv,
+      text: message,
+      location,
+      trip_id: activeTrip,
+      map_view: inJejuView(view),
+    };
     try {
       let reply;
       try {
@@ -1394,10 +1491,12 @@ function Chat({ onBack, tripId, onOpenPlanner }) {
         if (e.status !== 0) throw e;
         reply = await api.agentMessage(body); // 연결이 끊겼으면 같은 메시지 번호로 한 번 더(중복 실행 안 됨)
       }
-      if (reply.still_running) reply = await waitForRun(id, location);
-      if (reply.trip_id) setActiveTrip(reply.trip_id);
+      if (reply.still_running) reply = await waitForRun(id, location, inJejuView(view));
+      // 플래너 안에서는 늘 화면에 열린 여행을 고친다. 새 여행이 생기면 열기 버튼만 보여준다
+      if (reply.trip_id && !inline) setActiveTrip(reply.trip_id);
       setRulesOnly(reply.interpreter === "rules");
       setLog((l) => [...l, { role: "agent", text: reply.message, reply }]);
+      onReply?.(reply);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -1418,28 +1517,17 @@ function Chat({ onBack, tripId, onOpenPlanner }) {
 
   const cancel = () => running.current && api.agentCancel(running.current).catch(() => {});
 
-  const latest = [...log].reverse().find((m) => m.reply)?.reply;
-  const points = (latest?.places || [])
-    .filter((p) => p.lat != null)
-    .map((p, i) => ({ key: `p${i}`, number: i + 1, name: p.name, lat: p.lat, lon: p.lon }));
-  const shown = latest?.routes?.routes.find((r) => r.found);
-  const lines = shown ? [{ key: "r", kind: shown.kind, path: shown.line }] : [];
-
   return (
-    <main className="chat-screen">
-      <AppHeader title="AI 길잡이" back={onBack} />
-      {points.length > 0 && (
-        <div className="nearby-map">
-          <KakaoMap points={points} lines={lines} />
-        </div>
-      )}
+    <div className={inline ? "agent-panel inline" : "agent-panel"}>
       <section className="messages">
         <div className="agent-row">
           <span className="agent-avatar">
             <Icon name="spark" size={18} />
           </span>
           <div className="message agent-message">
-            무엇을 도와드릴까요? 근처 시설 찾기, 걷는 길 비교, 들를 곳을 넣은 일정 만들기와 고치기를 할 수 있어요.
+            {inline
+              ? "지도를 보면서 같이 짜요. 예: '빵집 두 곳이랑 카페 넣어서 돌아오는 코스 짜줘', '2번 빼줘', '이 근처 카페 찾아줘'"
+              : "무엇을 도와드릴까요? 지도에 보이는 곳이나 말씀하신 곳을 기준으로 시설 찾기, 걷는 길 비교, 일정 만들기와 고치기를 할 수 있어요."}
           </div>
         </div>
         {rulesOnly && <p className="result-count">지금은 정해진 표현 위주로 알아들어요. 짧고 분명하게 말씀해 주세요.</p>}
@@ -1461,7 +1549,7 @@ function Chat({ onBack, tripId, onOpenPlanner }) {
                   reply={m.reply}
                   onSend={(t) => send(t)}
                   onUseLocation={useLocation}
-                  onOpenPlanner={onOpenPlanner}
+                  onOpenPlanner={!inline || m.reply.trip_id !== tripId ? onOpenPlanner : null}
                   busy={busy}
                 />
               )}
@@ -1480,17 +1568,17 @@ function Chat({ onBack, tripId, onOpenPlanner }) {
         <div ref={bottom} />
       </section>
       <form
-        className="chat-input"
+        className={inline ? "chat-input inline" : "chat-input"}
         onSubmit={(e) => {
           e.preventDefault();
           send(text);
         }}
       >
-        {log.length === 0 && (
+        {log.length === 0 && !inline && (
           <div className="suggestions">
-            {SUGGESTIONS.map((s) => (
-              <button type="button" key={s} onClick={() => send(s)} disabled={busy}>
-                {s}
+            {SUGGESTIONS.map((x) => (
+              <button type="button" key={x} onClick={() => send(x)} disabled={busy}>
+                {x}
               </button>
             ))}
           </div>
@@ -1499,7 +1587,7 @@ function Chat({ onBack, tripId, onOpenPlanner }) {
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
-            placeholder="예: 근처 약국 어디야?"
+            placeholder={inline ? "예: 2번 빼고 카페 넣어줘" : "예: 이 근처 약국 어디야?"}
             aria-label="AI 길잡이에게 할 말"
             maxLength={500}
           />
@@ -1508,6 +1596,37 @@ function Chat({ onBack, tripId, onOpenPlanner }) {
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+// AI가 찾은 장소·경로를 지도에 그릴 값으로
+function replyMap(reply) {
+  const points = (reply?.places || [])
+    .filter((p) => p.lat != null)
+    .map((p, i) => ({ key: `ai${i}`, number: i + 1, name: p.name, lat: p.lat, lon: p.lon }));
+  const shown = reply?.routes?.routes.find((r) => r.found);
+  return { points, lines: shown ? [{ key: "ai-route", kind: shown.kind, path: shown.line }] : [] };
+}
+
+// 길찾기·근처 찾기: 지도를 늘 보여 주고, AI도 같은 지도를 본다
+function Chat({ onBack, tripId, onOpenPlanner }) {
+  const [view, setView] = useState(null);
+  const [latest, setLatest] = useState(null);
+  const { points, lines } = replyMap(latest);
+  return (
+    <main className="chat-screen">
+      <AppHeader title="AI 길잡이" back={onBack} />
+      <div className="nearby-map">
+        <KakaoMap points={points} lines={lines} onView={setView} />
+      </div>
+      <AgentPanel
+        tripId={tripId}
+        view={view}
+        storageKey={CONV_KEY}
+        onReply={setLatest}
+        onOpenPlanner={onOpenPlanner}
+      />
     </main>
   );
 }
@@ -1644,7 +1763,9 @@ export default function App() {
         )}
         {screen === "editor" && plannerId && (
           <Editor
+            key={plannerId}
             plannerId={plannerId}
+            onOpenPlanner={setPlannerId}
             onBack={() => setScreen("planners")}
             onTravel={(planner, map) => {
               setTrip({ ...planner, map });

@@ -40,7 +40,7 @@
 | 표 | 내용 |
 |---|---|
 | planners.version | 여행 버전. 수동 저장·Agent 게시마다 1 증가 |
-| conversations | 소유자, 대화 상태(대기 요청·슬롯·고를 후보·선호 이동 조건·최근 대화 20턴), revision |
+| conversations | 소유자, 대화 상태(대기 요청·슬롯·고를 후보·선호 이동 조건·대화 기록), revision |
 | agent_runs | (사용자, run_id=메시지 ID) 키, payload 해시, 단계, 체크포인트, 응답, 취소 요청, 게시 여부 |
 | tool_invocations | 호출 ID, 도구, 시도 번호, 인자 해시, 좌표를 소수 둘째 자리로 줄인 인자, 상태, 오류 종류, 소요시간, 결과 개수 요약 |
 

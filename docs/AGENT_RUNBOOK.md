@@ -8,7 +8,7 @@ cd src/frontend && npm run build && cd ../..
 .venv/Scripts/uvicorn jeju_lifepath.api.app:app --port 8000
 ```
 
-화면: 로그인 → "AI에게 일정 부탁하기" 또는 왼쪽 메뉴 "AI 길잡이".
+화면: 로그인 → "AI에게 일정 부탁하기" 또는 왼쪽 메뉴 "AI 길잡이"(지도와 함께). 플래너 화면에서는 "AI와 지도 보면서 같이 짜기"를 누르면 열린 여행을 AI가 함께 고치고, 고칠 때마다 지도가 다시 그려진다.
 
 ## 설정 (`.env`, 값은 로그·응답에 넣지 않음)
 
@@ -25,11 +25,11 @@ cd src/frontend && npm run build && cd ../..
 
 | 요청 | 설명 |
 |---|---|
-| `POST /api/agent/messages` | `{message_id, conversation_id?, text, location?, trip_id?}`. 같은 message_id 재전송은 같은 응답, 다른 내용이면 409 |
+| `POST /api/agent/messages` | `{message_id, conversation_id?, text, location?, trip_id?, map_view?}`. map_view는 지금 보이는 지도(가운데·네 모서리), 저장 안 함. 같은 message_id 재전송은 같은 응답, 다른 내용이면 409 |
 | `GET /api/agent/runs/{run_id}` | 진행 상태. `?detail=true`면 도구 호출 기록(본인 것만) |
 | `POST /api/agent/runs/{run_id}/cancel` | 취소 요청. 게시 직전에 확인해 일정에 반영하지 않음 |
 | `POST /api/agent/runs/{run_id}/resume` | 서버가 꺼졌다 켜져 중단된 실행 이어가기. `{location?}` |
-| `GET /api/agent/conversations/{id}` | 새로고침 후 대화 복원(최근 20턴 문장, 연결된 여행) |
+| `GET /api/agent/conversations/{id}` | 새로고침 후 대화 복원(대화 기록 문장, 연결된 여행) |
 
 run_id는 화면이 만든 message_id와 같다.
 
@@ -37,7 +37,7 @@ run_id는 화면이 만든 message_id와 같다.
 
 - 서버가 실행 도중 꺼지면 다음 시작 때 그 실행은 "중단", 끝나지 않은 도구 호출은 "불확실"로 표시된다. resume을 부르면 다시 해석하고 읽기 도구만 다시 부른 뒤, 아직 게시하지 않았을 때만 게시한다.
 - 카카오·LLM 429/5xx/시간 초과는 최대 2번 다시 시도(Retry-After를 따름). 인증 오류는 다시 시도하지 않는다.
-- 같은 실패가 3번 넘게 반복되거나 60초를 넘으면 멈추고, 일정은 바꾸지 않고 부분 결과만 알린다.
+- 같은 실패가 3번 넘게 반복되거나 41초를 넘으면 멈추고, 일정은 바꾸지 않고 부분 결과만 알린다.
 
 ## 평가
 

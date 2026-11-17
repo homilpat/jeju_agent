@@ -488,6 +488,8 @@ def itinerary(
     end_label = "출발한 곳으로 돌아오기" if s.round_trip else f"{s.destination_text}까지"
     view = _itinerary_view(stops, leg_list, check, end_label)
     notes = [GREEDY_NOTE]
+    if ctx.get("start_label") in ("지금 위치", "지도 가운데"):
+        notes.insert(0, f"{ctx['start_label']}에서 출발하는 기준으로 짰어요.")
     missing = [HOURS_UNVERIFIED]
     if not s.stay_minutes:
         missing.append("이동 시간만 계산했고 머무는 시간은 빠져 있어요.")

@@ -529,7 +529,7 @@ def test_api_agent_flow(tmp_path):
     assert (
         a.put(
             f"/api/planners/{r['trip_id']}",
-            json={k: v for k, v in planner.items() if k not in ("id", "updated_at")},
+            json={k: v for k, v in planner.items() if k not in ("id", "updated_at", "version")},
         ).status_code
         == 200
     )
@@ -709,3 +709,70 @@ def test_theme_without_count_gets_one(world):
     agent = Agent(world["store"], world["ctx"], llm=llm, clock=lambda: NOW)
     r = say(world, "격자동에서 빵집 2곳이랑 카페도 들르고 돌아오는 코스 짜줘", agent=agent)
     assert len(r["itinerary"]["stops"]) == 3
+
+
+def test_map_view_is_used_and_named(world):
+    view = {"center": dict(LOC), "south": 33.502, "west": 126.502, "north": 33.506, "east": 126.506}
+    r = world["agent"].handle_message(world["uid"], uuid.uuid4().hex, "근처 약국 어디야",
+                                      map_view=view)
+    assert r["status"] == "ok" and r["message"].startswith("지도 가운데")
+    r2 = world["agent"].handle_message(world["uid"], uuid.uuid4().hex,
+                                       "빵집이랑 카페 두 곳 들르고 돌아오는 코스 짜줘", map_view=view)
+    assert r2["status"] == "ok"
+    assert any("지도 가운데" in n for n in r2["itinerary"]["notes"])
+    assert trip_body(world, r2["trip_id"])[0]["agent"]["start_point"]
+    # 직접 말한 지명이 지도보다 우선
+    r3 = world["agent"].handle_message(world["uid"], uuid.uuid4().hex, "격자마을 근처 약국",
+                                       map_view=view)
+    assert r3["message"].startswith("격자마을")
+
+
+def test_plan_fills_open_empty_planner(world):
+    store = world["store"]
+    empty = store.save_planner(world["uid"], {"title": "가족 여행", "places": [],
+                                              "route_choices": []})
+    r = say(world, PLAN, trip=empty)
+    assert r["trip_id"] == empty and r["trip_version"] == 2
+    body = trip_body(world, empty)[0]
+    assert body["title"] == "가족 여행" and len(body["places"]) == 2
+    r2 = say(world, PLAN, trip=empty)  # 장소가 이미 있으면 덮지 않고 새 여행
+    assert r2["trip_id"] != empty
+
+
+def test_resume_keeps_map_view(world):
+    view = {"center": dict(LOC), "south": 33.502, "west": 126.502, "north": 33.506, "east": 126.506}
+
+    def hook(stage):
+        if stage == "running_tool":
+            raise Crash()
+
+    mid = uuid.uuid4().hex
+    with pytest.raises(Crash):
+        Agent(world["store"], world["ctx"], clock=lambda: NOW, stage_hook=hook).handle_message(
+            world["uid"], mid, "근처 약국 어디야", map_view=view)
+    world["store"]._db.close()
+    reopened = Store(world["path"])
+    r = Agent(reopened, world["ctx"], clock=lambda: NOW).resume(world["uid"], mid, map_view=view)
+    assert r["status"] == "ok" and r["message"].startswith("지도 가운데")
+
+
+def test_planner_get_returns_version(tmp_path):
+    from fastapi.testclient import TestClient  # noqa: PLC0415
+
+    from jeju_lifepath.api.app import create_app  # noqa: PLC0415
+
+    c = TestClient(create_app(tmp_path / "v.db", tmp_path / "no-dist", tmp_path, lambda: None,
+                              kakao=FakeKakao(), llm=None))
+    c.post("/api/auth/signup", json={"username": "verso", "password": "password123"})
+    pid = c.post("/api/planners", json={"title": "t", "places": [], "route_choices": []}).json()["id"]
+    assert c.get(f"/api/planners/{pid}").json()["version"] == 1
+    c.put(f"/api/planners/{pid}", json={"title": "u", "places": [], "route_choices": []})
+    assert c.get(f"/api/planners/{pid}").json()["version"] == 2
+
+
+def test_llm_category_word_is_not_a_place(world):
+    llm = MockLLM(lambda _t: json.dumps({"intent": "guide", "place_query": "약국",
+                                         "location_text": "근처", "facility": "pharmacy"}))
+    agent = Agent(world["store"], world["ctx"], llm=llm, clock=lambda: NOW)
+    r = say(world, "근처 약국 어디야", agent=agent)
+    assert r["status"] == "needs_input" and tools_called(agent) == []

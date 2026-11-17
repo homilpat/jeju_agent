@@ -72,12 +72,18 @@ def run_case(case: dict, llm, tmp: Path) -> dict:
         store, make_context(kakao=kakao), llm=llm, clock=lambda: NOW, sleep=lambda _s: None
     )
     conv, calls, statuses, versions, resp = None, [], [], [], None
+    turn_seconds, turn_calls, first_stops = [], [], None
     started = time.monotonic()
     for turn in case["turns"]:
         loc = CENTER if turn.get("location") == "center" else None
+        t0 = time.monotonic()
         resp = agent.handle_message(
             uid, uuid.uuid4().hex, turn["text"], conversation_id=conv, location=loc
         )
+        turn_seconds.append(round(time.monotonic() - t0, 3))
+        turn_calls.append(len(agent.last_trajectory))
+        if resp.get("itinerary") and first_stops is None:
+            first_stops = len(resp["itinerary"]["stops"])
         conv = resp["conversation_id"]
         calls += agent.last_trajectory
         statuses.append(resp["status"])
@@ -112,6 +118,11 @@ def run_case(case: dict, llm, tmp: Path) -> dict:
         hard["first_status"] = statuses[0] == exp["first_status"]
     if "stops" in exp:
         hard["stops"] = bool(resp["itinerary"]) and len(resp["itinerary"]["stops"]) == exp["stops"]
+    if "stops_delta" in exp:
+        hard["stops_delta"] = (
+            bool(resp["itinerary"]) and first_stops is not None
+            and len(resp["itinerary"]["stops"]) == first_stops + exp["stops_delta"]
+        )
     if "forbidden_stop" in exp:
         hard["forbidden_stop"] = bool(resp["itinerary"]) and exp["forbidden_stop"] not in [
             s["name"] for s in resp["itinerary"]["stops"]
@@ -133,6 +144,8 @@ def run_case(case: dict, llm, tmp: Path) -> dict:
         "hard": hard,
         "hard_pass": all(hard.values()),
         "tool_calls": len(calls),
+        "turn_seconds": turn_seconds,  # 요청 하나당 걸린 시간(실행 제한 실측용)
+        "turn_tool_calls": turn_calls,
         "seconds": round(elapsed, 3),
         "interpreter": resp["interpreter"],
     }

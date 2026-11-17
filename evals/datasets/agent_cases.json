@@ -48,7 +48,8 @@
         {"text": "1번 다녀왔어"}
       ],
       "expect": {"intent": "plan_modify", "status": "ok", "required_tools": ["get_travel_matrix"],
-                 "trip_changes": 4, "stops": 1, "first_stop_done": true, "first_stop_fixed": true}
+                 "trip_changes": 4, "stops_delta": -1, "first_stop_done": true, "first_stop_fixed": true},
+      "_history": "2026-11-18 기대값 stops=1은 '빵집 두 곳이랑 카페'를 2곳으로 보던 옛 규칙에 묶여 있었다. LLM이 종류별 개수(빵집 2+카페 1)를 판단하게 바꾼 뒤(사용자 결정) 실 LLM 3회에서 실패. '처음보다 한 곳 적음'으로 고침"
     },
     {
       "id": "C01-transient-then-ok",

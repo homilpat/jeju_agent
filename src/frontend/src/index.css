@@ -2352,3 +2352,23 @@
     top: 12px;
   }
 }
+
+/* 플래너 안의 AI 칸: 화면 아래 고정이 아니라 목록 사이에 놓인다 */
+.agent-panel.inline {
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: #f5f8f7;
+}
+.agent-panel.inline .messages {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 12px;
+}
+.chat-input.inline {
+  position: static;
+  width: 100%;
+  padding: 8px 12px 12px;
+  background: transparent;
+  border-top: 0;
+}

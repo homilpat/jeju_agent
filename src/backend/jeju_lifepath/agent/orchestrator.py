@@ -25,10 +25,17 @@ from jeju_lifepath.agent.parse import LODGING, SEOUL, parse_rules
 from jeju_lifepath.agent.services import AgentContext, build_tools
 from jeju_lifepath.agent.tools import Budget, BudgetExceeded, ToolRunner
 from jeju_lifepath.api.store import RunCancelled, Store, VersionConflict
+from jeju_lifepath.geo.geodesy import haversine_m
 from jeju_lifepath.routing.optimizer import SPEED_M_PER_MIN
 from jeju_lifepath.schemas import MobilityProfile, RoutePreference
 
 log = logging.getLogger(__name__)
+
+
+# 지도를 아주 크게 확대했을 때도 이만큼은 찾는다(카카오 검색 최소 단위와 무관한 화면 기준값).
+# shortcut: 근거 없는 값, 확대 화면에서 결과가 너무 적으면 조정
+MIN_VIEW_RADIUS_M = 300
+KAKAO_MAX_RADIUS_M = 20000  # 카카오 로컬 검색 반경 상한(API 규격)
 
 
 class NeedInput(Exception):  # noqa: N818 - 흐름 제어용(오류 아님)
@@ -93,7 +100,10 @@ class Agent:
         conversation_id: str | None = None,
         location: dict | None = None,
         trip_id: int | None = None,
+        map_view: dict | None = None,
     ) -> dict:
+        """map_view: 사용자가 지금 보고 있는 지도({center: {lat, lon}, south, west, north, east}).
+        AI가 같은 지도를 보고 "여기", "이 근처"를 이해하게 한다. 저장하지 않는다."""
         conv_id = conversation_id or uuid.uuid4().hex
         owner = self.store.conversation_owner(conv_id)
         if owner is not None and owner != user_id:
@@ -116,9 +126,13 @@ class Agent:
             raise Conflict(message_id)
         if status == "duplicate":
             return stored or present.still_running(message_id, conv_id)
-        return self._run(user_id, message_id, conv_id, text, location, trip_id, saved_parse=None)
+        return self._run(user_id, message_id, conv_id, text, location, trip_id, saved_parse=None,
+                         map_view=map_view)
 
-    def resume(self, user_id: int, run_id: str, location: dict | None = None) -> dict:
+    def resume(
+        self, user_id: int, run_id: str, location: dict | None = None,
+        map_view: dict | None = None,
+    ) -> dict:
         run = self.store.get_run(user_id, run_id)
         if run is None:
             raise NotFound(run_id)
@@ -156,6 +170,7 @@ class Agent:
             cp.get("trip_id"),
             saved_parse=None,
             pinned_version=cp.get("trip_version", 0) if "parse" in cp else None,
+            map_view=map_view,
         )
 
     def cancel(self, user_id: int, run_id: str) -> bool:
@@ -185,6 +200,7 @@ class Agent:
     def _run(  # noqa: PLR0917
         self, user_id, run_id, conv_id, text, location, trip_id, saved_parse,
         pinned_version: int | None = None,
+        map_view: dict | None = None,
     ) -> dict:
         """pinned_version: 재개일 때 실행 당시 대상 여행 버전(None 여행이면 0). 대화의 현재 여행으로
         바꾸지 않고, 그사이 여행이 바뀌었으면 게시하지 않는다."""
@@ -199,6 +215,7 @@ class Agent:
         )
         conv_rev = found[1] if found else 0
         state.setdefault("prefs", {})
+        explicit_trip = trip_id is not None  # 화면이 지금 열어 둔 여행(플래너 화면에서 AI와 같이 짤 때)
         if pinned_version is None:
             trip_id = trip_id or state.get("trip_id")
         trip = self.store.get_trip(user_id, trip_id) if trip_id else None
@@ -210,6 +227,8 @@ class Agent:
             "conv_id": conv_id,
             "text": text,
             "location": location,
+            "map_view": map_view,
+            "explicit_trip": explicit_trip,
             "trip_id": trip_id,
             "trip": trip,
             "state": state,
@@ -275,13 +294,13 @@ class Agent:
             return self._close(ctx, resp, "failed", state)
 
     def _close(self, ctx, resp, stage, state) -> dict:
-        state["history"] = (
-            state.get("history", [])
-            + [
-                {"role": "user", "text": ctx["text"]},
-                {"role": "agent", "text": resp["message"]},
-            ]
-        )[-self.policy.history_turns * 2 :]
+        # 대화 기록은 새로고침 후 화면 복원에만 쓴다(LLM에 보내지 않음). 횟수 제한 없이
+        # 보유기간(trace_retention_days)이 지나면 대화째 지운다
+        state["history"] = [
+            *state.get("history", []),
+            {"role": "user", "text": ctx["text"]},
+            {"role": "agent", "text": resp["message"]},
+        ]
         if ctx.get("trip_id"):
             state["trip_id"] = ctx["trip_id"]
         resp["summary"] = present.run_summary(ctx["runner"].trajectory)
@@ -308,8 +327,7 @@ class Agent:
                 merged = state
             else:
                 merged = {**base, **{k: v for k, v in mine.items() if v is not None}}
-                merged["history"] = (base.get("history", []) + added)[
-                    -self.policy.history_turns * 2 :]
+                merged["history"] = [*base.get("history", []), *added]
             if self.store.save_conversation(ctx["user_id"], ctx["conv_id"], merged, rev):
                 return
         log.warning("conversation state save kept losing the race")
@@ -336,10 +354,17 @@ class Agent:
                 resp = present.validation_failed(ctx, ctx["parse"], {}, self.policy.version)
                 return self._close(ctx, resp, "failed", state)
         self._stage(ctx["user_id"], ctx["run_id"], "committing")
-        if (
-            ctx["parse"].intent == "plan_create"
-        ):  # 새 일정은 언제나 새 여행으로(기존 여행을 덮지 않음)
-            ctx["trip_id"], ctx["trip"] = None, None
+        if ctx["parse"].intent == "plan_create":
+            empty = ctx["trip"] and not ctx["trip"][0].get("places")
+            if ctx.get("explicit_trip") and empty:
+                # 열어 둔 빈 플래너를 채운다(제목·날짜는 사용자가 정한 값 유지)
+                old = ctx["trip"][0]
+                keep = {k: old[k] for k in ("title", "start_date", "end_date") if old.get(k)}
+                if keep.get("title") == "새 여행":
+                    keep.pop("title")
+                body = {**body, **keep}
+            else:  # 그 밖의 새 일정은 언제나 새 여행으로(기존 여행을 덮지 않음)
+                ctx["trip_id"], ctx["trip"] = None, None
         expected = ctx["trip"][1] if ctx["trip"] else None
         cp = {
             "text": ctx["text"],
@@ -522,6 +547,9 @@ class Agent:
                 "lat": ctx["location"]["lat"],
                 "label": "지금 위치",
             }
+        if ctx.get("map_view"):  # 사용자가 보고 있는 지도 가운데(답에 "지도 가운데"라고 밝힌다)
+            c = ctx["map_view"]["center"]
+            return {"lon": c["lon"], "lat": c["lat"], "label": "지도 가운데"}
         raise NeedInput([{"text": ask, "needs_location": True}], p.model_dump(mode="json"))
 
     @staticmethod
@@ -572,13 +600,20 @@ class Agent:
 
     def _search(self, ctx, query: str, near: dict) -> tuple[list[dict], bool]:
         """주변 검색. 0곳이면 반경을 한 번 넓힌다(조건은 그대로, 검색 전략만 변경)."""
+        radius = self.policy.search_radius_m
+        view = ctx.get("map_view")
+        if near.get("label") == "지도 가운데" and view:
+            # 지도에 보이는 범위(가운데에서 모서리까지)만큼 찾는다. 카카오 반경 상한 20km
+            corner = haversine_m(view["center"]["lon"], view["center"]["lat"], view["east"],
+                                 view["north"])
+            radius = int(min(max(corner, MIN_VIEW_RADIUS_M), KAKAO_MAX_RADIUS_M))
         args = {
             "query": query,
             "near": {"lon": near["lon"], "lat": near["lat"]},
-            "radius_m": self.policy.search_radius_m,
+            "radius_m": radius,
         }
         found = ctx["runner"].call("search_places", args)["places"]
-        if found:
+        if found or radius >= self.policy.widened_radius_m:
             return found, False
         ctx["observations"].append("widened")
         args["radius_m"] = self.policy.widened_radius_m
@@ -685,7 +720,7 @@ class Agent:
                     "options": [{"label": "출발한 곳으로 돌아오기", "reply": "돌아올게요"}],
                 }
             )
-        if not (s.location_text or ctx["location"]):
+        if not (s.location_text or ctx["location"] or ctx.get("map_view")):
             questions.append(
                 {
                     "text": "어디에서 출발하세요? 지금 위치를 쓰거나 출발지 이름을 알려 주세요.",
@@ -695,6 +730,7 @@ class Agent:
         if questions:  # 관련 질문을 한 번에 묶어 묻는다(AG-107)
             raise NeedInput(questions, p.model_dump(mode="json"))
         start = self._point(p, ctx)
+        ctx["start_label"] = start["label"]
         end = start if s.round_trip else self._point(p, ctx, text_slot="destination_text")
         mobility = self._mobility(p, ctx)
         m_per_min = self._speed(mobility)
@@ -801,7 +837,7 @@ class Agent:
                 # 지금 위치에서 시작한 일정만: 고칠 때 같은 출발·복귀점을 쓰려고 약 10m 단위로 저장
                 # (사용자 자신의 위치, 카카오 자료 아님. 여행을 지우면 함께 지워짐)
                 "start_point": None
-                if s.location_text or start.get("label") != "지금 위치"
+                if s.location_text or start.get("label") not in ("지금 위치", "지도 가운데")
                 else {"lon": round(start["lon"], 4), "lat": round(start["lat"], 4)},
                 "destination_text": None if s.round_trip else s.destination_text,
                 "round_trip": s.round_trip,
@@ -950,7 +986,9 @@ class Agent:
                     {
                         "query": st["query"],
                         "near": {"lon": anchor["lon"], "lat": anchor["lat"]},
-                        "radius_m": self.policy.widened_radius_m,
+                        # 만들 때 지도 범위로 최대 20km까지 찾았을 수 있어 같은 최대 반경으로
+                        # (거리순이라 처음 고른 곳은 같은 기준점 주변 결과 안에 다시 나온다)
+                        "radius_m": KAKAO_MAX_RADIUS_M,
                     },
                 )["places"]
             hit = [x for x in by_query[st["query"]] if x["ref"] == st["ref"]]

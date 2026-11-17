@@ -351,6 +351,24 @@ def planner_body(planner: Planner, public_points: dict[str, tuple[float, float]]
 ID_PATTERN = r"^[A-Za-z0-9-]{8,64}$"
 
 
+class MapView(BaseModel):
+    """화면 지도에 지금 보이는 범위. AI가 같은 지도를 보고 답하게 하는 맥락(저장 안 함)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    center: LatLon
+    south: float = Field(ge=-90, le=90)
+    west: float = Field(ge=-180, le=180)
+    north: float = Field(ge=-90, le=90)
+    east: float = Field(ge=-180, le=180)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> MapView:
+        if not (self.south < self.north and self.west < self.east):
+            raise ValueError("bounds")
+        return self
+
+
 class AgentMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -360,12 +378,14 @@ class AgentMessage(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     location: LatLon | None = None  # 사용자가 위치 사용을 허락했을 때만. 저장하지 않음
     trip_id: int | None = None
+    map_view: MapView | None = None
 
 
 class AgentResume(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     location: LatLon | None = None
+    map_view: MapView | None = None
 
 
 MSG_AGENT_CONFLICT = "같은 메시지 번호로 다른 내용이 왔어요. 새로 보내 주세요."
@@ -489,11 +509,12 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
 
     @app.get("/api/planners/{planner_id}")
     def get_planner(planner_id: int, token: SessionCookie = None) -> dict:
-        found = store.get_planner(current_user(token), planner_id)
+        found = store.get_trip(current_user(token), planner_id)
         if found is None:
             raise HTTPException(404, MSG_NOT_FOUND)
-        body, updated = found
-        return {"id": planner_id, **body, "updated_at": updated}
+        body, version, updated = found
+        # version: AI가 고쳤는지 화면이 알아보는 번호(저장할 때 보내지 않음)
+        return {"id": planner_id, **body, "updated_at": updated, "version": version}
 
     @app.put("/api/planners/{planner_id}")
     def update_planner(planner_id: int, planner: Planner, token: SessionCookie = None) -> dict:
@@ -623,13 +644,15 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
             conversation_id=body.conversation_id,
             location=body.location.model_dump() if body.location else None,
             trip_id=body.trip_id,
+            map_view=body.map_view.model_dump() if body.map_view else None,
         )
 
     @app.post("/api/agent/runs/{run_id}/resume")
     def agent_resume(run_id: str, body: AgentResume, token: SessionCookie = None) -> dict:
         user_id = current_user(token)
         loc = body.location.model_dump() if body.location else None
-        return agent_call(agent.resume, user_id, run_id, loc)
+        view = body.map_view.model_dump() if body.map_view else None
+        return agent_call(agent.resume, user_id, run_id, loc, view)
 
     @app.post("/api/agent/runs/{run_id}/cancel", status_code=202)
     def agent_cancel(run_id: str, token: SessionCookie = None) -> dict:

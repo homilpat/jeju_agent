@@ -97,7 +97,6 @@ class Policy:
     widened_radius_m: int
     max_stops: int
     trace_retention_days: int
-    history_turns: int
     llm: dict = field(default_factory=dict)
 
     @classmethod
