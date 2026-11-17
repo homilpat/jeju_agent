@@ -72,38 +72,3 @@ export async function resolvePlace(saved) {
   const found = await searchPlaces(saved.name);
   return found.find((p) => p.id === saved.ref) || null;
 }
-
-const inJejuBox = (lat, lon) => lat >= JEJU_SW[0] && lat <= JEJU_NE[0] && lon >= JEJU_SW[1] && lon <= JEJU_NE[1];
-
-// 지금 위치의 시와 읍면동 이름(법정동·행정동 둘 다). 제주 밖이면 null
-export async function regionOf(lat, lon) {
-  if (!inJejuBox(lat, lon)) return null;
-  const kakao = await loadKakao();
-  const geocoder = new kakao.maps.services.Geocoder();
-  return new Promise((resolve, reject) => {
-    geocoder.coord2RegionCode(lon, lat, (data, status) => {
-      if (status !== kakao.maps.services.Status.OK) return reject(new Error(MSG_SEARCH_FAILED));
-      const jeju = data.filter((d) => d.region_1depth_name.startsWith("제주"));
-      if (jeju.length === 0) return resolve(null);
-      resolve({
-        city: jeju[0].region_2depth_name,
-        regions: [...new Set(jeju.map((d) => d.region_3depth_name).filter(Boolean))],
-      });
-    });
-  });
-}
-
-// 주소 -> 좌표. 화면에 쓰는 동안만 메모리에 두고 저장하지 않는다(카카오 운영정책).
-// 주소를 못 찾으면 null, 검색 자체가 실패하면 예외(빠진 후보로 엉뚱한 가까운 곳을 보여주지 않게)
-export async function geocode(address) {
-  const kakao = await loadKakao();
-  const geocoder = new kakao.maps.services.Geocoder();
-  const { OK, ZERO_RESULT } = kakao.maps.services.Status;
-  return new Promise((resolve, reject) => {
-    geocoder.addressSearch(address, (data, status) => {
-      if (status === OK) resolve({ lat: Number(data[0].y), lon: Number(data[0].x) });
-      else if (status === ZERO_RESULT) resolve(null);
-      else reject(new Error(MSG_SEARCH_FAILED));
-    });
-  });
-}

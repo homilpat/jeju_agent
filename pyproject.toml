@@ -24,6 +24,10 @@ dev = [
     "pytest==9.2.0",
     "ruff==0.17.3",
 ]
+# Agent 평가(REQUIREMENTS 13.1). 2026-11-18 동작 확인한 버전. 로컬 실행: evals/run_agent_evals.py
+eval = [
+    "agentevals==0.0.9",
+]
 
 # Monorepo layout: src/backend (Python engine/agent), src/frontend (UI, G10).
 # Tests mirror it: tests/backend, tests/frontend.

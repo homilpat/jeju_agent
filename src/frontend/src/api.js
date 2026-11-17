@@ -39,12 +39,21 @@ export const api = {
   updatePlanner: (id, planner) => request("PUT", `/planners/${id}`, planner),
   deletePlanner: (id) => request("DELETE", `/planners/${id}`),
   // 경로 계산용 임시 좌표(저장 안 함)
-  compareRoutes: (origin, destination, preferCctv = false) =>
-    request("POST", "/routes/compare", { origin, destination, prefer_cctv: preferCctv }),
-  // 근처 시설. 화장실은 좌표 없는 후보(이름·주소)만 오고, 위치는 화면이 그때그때 찾는다
-  nearbyToilets: (city, regions) =>
-    request("GET", `/nearby/toilets?${new URLSearchParams([["city", city], ...regions.map((r) => ["region", r])])}`),
-  nearby: (kind, lat, lon) => request("GET", `/nearby/${kind}?${new URLSearchParams({ lat, lon })}`),
+  // mobility: 플래너에 저장된 이동 조건(유모차·휠체어). 없으면 서버 기본(일반 보행)
+  compareRoutes: (origin, destination, preferCctv = false, mobility = null) =>
+    request("POST", "/routes/compare", {
+      origin,
+      destination,
+      prefer_cctv: preferCctv,
+      ...(mobility ? { mobility } : {}),
+    }),
+  // AI 길잡이. message_id는 화면이 만든 번호: 같은 번호로 다시 보내도 한 번만 실행된다
+  agentMessage: (body) => request("POST", "/agent/messages", body),
+  agentCancel: (runId) => request("POST", `/agent/runs/${encodeURIComponent(runId)}/cancel`),
+  agentRun: (runId) => request("GET", `/agent/runs/${encodeURIComponent(runId)}`),
+  agentResume: (runId, location) =>
+    request("POST", `/agent/runs/${encodeURIComponent(runId)}/resume`, { location: location || null }),
+  agentConversation: (id) => request("GET", `/agent/conversations/${encodeURIComponent(id)}`),
 };
 
 // 범죄주의구간 지도 그림 주소(지금 보이는 지도 사각형·픽셀 크기). 서버가 키를 숨기고 대신 받아 준다

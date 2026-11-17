@@ -1,0 +1,208 @@
+"""Agent 평가: AgentEvals(도구 호출 경로) + 자체 하드 제약 검사. 로컬에서 키 없이 돌아간다.
+
+    .venv/Scripts/python evals/run_agent_evals.py                # 합성 세계, 규칙 해석
+    .venv/Scripts/python evals/run_agent_evals.py --llm real     # 실 LLM 해석(opt-in, 사용료 발생)
+
+결과: evals/results/<시각>.json (커밋하지 않음, 개인정보 없음). 요약을 화면에 출력한다.
+AgentEvals 판정(trajectory superset: 필수 도구를 모두 불렀는가)과 자체 검사(금지 도구, 상태,
+여행 변경 횟수, 금지 장소 등)를 따로 집계한다. 실행하지 못한 항목은 NOT_RUN으로 분모에서 뺀다.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from datetime import UTC, datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / "src" / "backend"), str(ROOT)]
+
+from agentevals.trajectory.match import create_trajectory_match_evaluator  # noqa: E402
+from tests.backend.fixtures.agent_world import CENTER, NOW, FakeKakao, make_context  # noqa: E402
+
+from jeju_lifepath.agent.models import Policy, ToolError  # noqa: E402
+from jeju_lifepath.agent.orchestrator import Agent  # noqa: E402
+from jeju_lifepath.api import store as store_module  # noqa: E402
+from jeju_lifepath.api.store import Store  # noqa: E402
+
+DATASET = ROOT / "evals" / "datasets" / "agent_cases.json"
+RESULTS = ROOT / "evals" / "results"
+EVALUATOR = create_trajectory_match_evaluator(
+    trajectory_match_mode="superset", tool_args_match_mode="ignore"
+)
+
+
+def as_messages(turns: list[str], calls: list[dict], final: str) -> list[dict]:
+    """AgentEvals가 읽는 OpenAI 메시지 형식으로 실제 실행 trace를 옮긴다."""
+    msgs = [{"role": "user", "content": t} for t in turns]
+    if calls:
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": c["name"],
+                            "arguments": json.dumps(c["args"], ensure_ascii=False),
+                        }
+                    }
+                    for c in calls
+                ],
+            }
+        )
+    msgs.append({"role": "assistant", "content": final})
+    return msgs
+
+
+def run_case(case: dict, llm, tmp: Path) -> dict:
+    store_module.SCRYPT_N = 2**10
+    store = Store(tmp / f"{case['id']}.db")
+    uid = store.create_user("evaluser", "password123")
+    kakao = FakeKakao()
+    for kind in case.get("inject", {}).get("kakao_fail", []):
+        kakao.fail_queue.append(ToolError(kind, "injected"))
+    agent = Agent(
+        store, make_context(kakao=kakao), llm=llm, clock=lambda: NOW, sleep=lambda _s: None
+    )
+    conv, calls, statuses, versions, resp = None, [], [], [], None
+    started = time.monotonic()
+    for turn in case["turns"]:
+        loc = CENTER if turn.get("location") == "center" else None
+        resp = agent.handle_message(
+            uid, uuid.uuid4().hex, turn["text"], conversation_id=conv, location=loc
+        )
+        conv = resp["conversation_id"]
+        calls += agent.last_trajectory
+        statuses.append(resp["status"])
+        trips = store.list_planners(uid)
+        versions.append(sum(store.get_trip(uid, t[0])[1] for t in trips))
+    elapsed = time.monotonic() - started
+    trace = agent.run_status(uid, resp["run_id"], detail=True)["trace"]
+    exp = case["expect"]
+    last_turn_calls = agent.last_trajectory
+    reference = as_messages(
+        [t["text"] for t in case["turns"]],
+        [{"name": n, "args": {}} for n in exp["required_tools"]],
+        "",
+    )
+    output = as_messages(
+        [t["text"] for t in case["turns"]],
+        last_turn_calls if exp["intent"] == "plan_modify" else calls,
+        resp["message"],
+    )
+    agentevals = EVALUATOR(outputs=output, reference_outputs=reference)
+    names = {c["name"] for c in calls}
+    hard = {
+        "status": resp["status"] == exp["status"],
+        "trip_changes": versions[-1] == exp["trip_changes"],
+    }
+    forbidden = exp.get("forbidden_tools", [])
+    if forbidden == ["*"]:
+        hard["forbidden_tools"] = not last_turn_calls
+    elif forbidden:
+        hard["forbidden_tools"] = not (names & set(forbidden))
+    if "first_status" in exp:
+        hard["first_status"] = statuses[0] == exp["first_status"]
+    if "stops" in exp:
+        hard["stops"] = bool(resp["itinerary"]) and len(resp["itinerary"]["stops"]) == exp["stops"]
+    if "forbidden_stop" in exp:
+        hard["forbidden_stop"] = bool(resp["itinerary"]) and exp["forbidden_stop"] not in [
+            s["name"] for s in resp["itinerary"]["stops"]
+        ]
+    if exp.get("first_stop_done"):
+        hard["first_stop_done"] = resp["itinerary"]["stops"][0]["done"]
+    if exp.get("first_stop_fixed"):
+        hard["first_stop_fixed"] = resp["itinerary"]["stops"][0]["fixed"]
+    if "unverified_claim" in exp:
+        hard["unverified_claim"] = any(
+            exp["unverified_claim"] in c["text"] and not c["verified"] for c in resp["claims"]
+        )
+    if "min_attempts" in exp:
+        hard["min_attempts"] = len(trace) >= exp["min_attempts"]
+    return {
+        "id": case["id"],
+        "split": case["split"],
+        "agentevals_superset": bool(agentevals["score"]),
+        "hard": hard,
+        "hard_pass": all(hard.values()),
+        "tool_calls": len(calls),
+        "seconds": round(elapsed, 3),
+        "interpreter": resp["interpreter"],
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--llm", choices=["none", "real"], default="none")
+    ap.add_argument("--repeat", type=int, default=1, help="실 LLM 비결정성 확인용 반복 횟수")
+    args = ap.parse_args()
+    llm, llm_note = None, "NOT_RUN (규칙 해석만)"
+    if args.llm == "real":
+        from jeju_lifepath.api.app import default_llm  # noqa: PLC0415
+
+        llm = default_llm(Policy.load())
+        if llm is None:
+            print("실 LLM 키가 없어 NOT_RUN")
+            return 2
+        llm_note = f"real ({llm.model})"
+    cases = json.loads(DATASET.read_text(encoding="utf-8"))["cases"]
+    rows = []
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:  # 윈도우: 열린 DB 파일
+        for rep in range(args.repeat):
+            for case in cases:
+                row = run_case(case, llm, Path(tmp) / f"r{rep}")
+                row["repeat"] = rep
+                rows.append(row)
+    commit = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    summary = {
+        "ran_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "code_commit": commit,
+        "policy_version": Policy.load().version,
+        "dataset": "evals/datasets/agent_cases.json",
+        "world": "synthetic-grid (tests/backend/fixtures/agent_world.py)",
+        "llm": llm_note,
+        "real_kakao": "NOT_RUN",
+        "cases": len(rows),
+        "agentevals_superset_pass": sum(r["agentevals_superset"] for r in rows),
+        "hard_pass": sum(r["hard_pass"] for r in rows),
+        "by_split": {
+            s: {
+                "cases": sum(r["split"] == s for r in rows),
+                "hard_pass": sum(r["hard_pass"] for r in rows if r["split"] == s),
+            }
+            for s in ("dev", "holdout")
+        },
+        "rows": rows,
+    }
+    RESULTS.mkdir(exist_ok=True)
+    out = RESULTS / f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
+    out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    for r in rows:
+        bad = [k for k, v in r["hard"].items() if not v]
+        print(
+            f"{r['id']:<36} agentevals={'O' if r['agentevals_superset'] else 'X'} "
+            f"hard={'O' if r['hard_pass'] else 'X ' + ','.join(bad)} calls={r['tool_calls']}"
+        )
+    print(
+        f"AgentEvals {summary['agentevals_superset_pass']}/{len(rows)}, "
+        f"hard {summary['hard_pass']}/{len(rows)}, LLM {llm_note}"
+    )
+    print(f"결과 파일: {out.relative_to(ROOT).as_posix()}")
+    return 0 if summary["hard_pass"] == len(rows) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

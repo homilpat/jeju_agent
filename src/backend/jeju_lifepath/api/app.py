@@ -29,6 +29,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pyproj import Transformer
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from jeju_lifepath.agent.kakao import KakaoLocal
+from jeju_lifepath.agent.llm import OpenAICompatibleLLM
+from jeju_lifepath.agent.models import Policy
+from jeju_lifepath.agent.orchestrator import Agent, Conflict, NotFound
+from jeju_lifepath.agent.services import AgentContext
 from jeju_lifepath.api.store import SESSION_DAYS, Store
 from jeju_lifepath.geo.geodesy import haversine_m
 from jeju_lifepath.presentation.route import render_plan
@@ -268,6 +273,32 @@ def nearest(points: list[dict], lat: float, lon: float, limit: int = NEARBY_LIMI
     return out
 
 
+class AgentStop(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str = Field(min_length=1, max_length=64)
+    query: str = Field(min_length=1, max_length=40)
+    theme: str = Field(min_length=1, max_length=40)
+    fixed: bool = False
+    completed: bool = False
+
+
+class AgentTripMeta(BaseModel):
+    """Agent가 만든 일정의 조건(사용자가 말한 값과 장소 ID만. 카카오 이름·좌표는 없음)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    anchor_text: str | None = Field(default=None, max_length=40)
+    start_point: LatLon | None = None  # 지금 위치에서 시작한 일정의 출발점(약 10m 단위)
+    destination_text: str | None = Field(default=None, max_length=40)
+    round_trip: bool = True
+    return_by: str | None = Field(default=None, max_length=40)
+    stay_minutes: int | None = Field(default=None, ge=0, le=600)
+    themes: list[str] = Field(default_factory=list, max_length=10)
+    stops: list[AgentStop] = Field(default_factory=list, max_length=30)
+    excluded_refs: list[str] = Field(default_factory=list, max_length=100)
+
+
 class Planner(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -279,6 +310,9 @@ class Planner(BaseModel):
     route_choices: list[RoutePreference] = Field(default_factory=list)
     # "공개된 방범 CCTV가 근처에 있는 길로 안내할까요?" 답. None = 아직 안 물어봄
     prefer_cctv: bool | None = None
+    # 이동 조건(유모차·휠체어). 화면·Agent·경로 계산에 같은 값을 넘긴다(AG-206)
+    mobility: MobilityProfile | None = None
+    agent: AgentTripMeta | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Planner:
@@ -314,6 +348,45 @@ def planner_body(planner: Planner, public_points: dict[str, tuple[float, float]]
     return body
 
 
+ID_PATTERN = r"^[A-Za-z0-9-]{8,64}$"
+
+
+class AgentMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # 화면이 만든 메시지 ID(UUID). 같은 ID로 다시 보내면 다시 실행하지 않는다(AG-405)
+    message_id: str = Field(pattern=ID_PATTERN)
+    conversation_id: str | None = Field(default=None, pattern=ID_PATTERN)
+    text: str = Field(min_length=1, max_length=500)
+    location: LatLon | None = None  # 사용자가 위치 사용을 허락했을 때만. 저장하지 않음
+    trip_id: int | None = None
+
+
+class AgentResume(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location: LatLon | None = None
+
+
+MSG_AGENT_CONFLICT = "같은 메시지 번호로 다른 내용이 왔어요. 새로 보내 주세요."
+MSG_AGENT_NOT_FOUND = "찾는 대화가 없어요."
+
+
+def default_llm(policy: Policy):
+    """LLM_API_KEY가 있으면 실 LLM, 없으면 None(규칙 해석 제한 모드). AGENT_LLM=off로 끌 수 있다."""
+    key = read_env("LLM_API_KEY")
+    if not key or read_env("AGENT_LLM") == "off":
+        return None
+    cfg = policy.llm
+    return OpenAICompatibleLLM(
+        read_env("LLM_BASE_URL") or cfg["base_url"],
+        read_env("LLM_MODEL") or cfg["model"],
+        key,
+        cfg["timeout_s"],
+        cfg.get("reasoning_effort"),
+    )
+
+
 def is_https(request: Request) -> bool:
     # 휴대폰 시연용 https 터널은 X-Forwarded-Proto로 알려준다
     return request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
@@ -327,8 +400,14 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     *,
     crime_fetch: Callable[..., bytes | None] = fetch_crime_png,
     toilet_file: Path = TOILET_FILE,
+    kakao: object | None = None,
+    llm: object | None = "env",
+    policy: Policy | None = None,
+    agent_hooks: dict | None = None,
 ) -> FastAPI:
     store = Store(db_path)
+    policy = policy or Policy.load()
+    store.purge_older_than(policy.trace_retention_days)
     public_points = load_public_points(processed_dir)
     toilets = load_toilets(toilet_file)
     nearby = load_nearby(processed_dir)
@@ -506,6 +585,76 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     ) -> list[dict]:
         current_user(token)
         return nearest(nearby[kind], lat, lon)
+
+    # agent ---------------------------------------------------------------
+    agent = Agent(
+        store,
+        AgentContext(
+            kakao=kakao or KakaoLocal(read_env("KAKAO_REST_API_KEY")),
+            get_router=get_router,
+            policy=policy,
+            nearby=nearby,
+            toilets=toilets,
+            toilets_in=toilets_in,
+            nearest=nearest,
+            trip_validator=lambda body: planner_body(Planner.model_validate(body), public_points),
+        ),
+        llm=default_llm(policy) if llm == "env" else llm,
+        **(agent_hooks or {}),
+    )
+    app.state.agent = agent
+
+    def agent_call(fn, *args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Conflict:
+            raise HTTPException(409, MSG_AGENT_CONFLICT) from None
+        except NotFound:
+            raise HTTPException(404, MSG_AGENT_NOT_FOUND) from None
+
+    @app.post("/api/agent/messages")
+    def agent_message(body: AgentMessage, token: SessionCookie = None) -> dict:
+        user_id = current_user(token)  # 사용자 ID는 세션에서만 정한다(AG-202)
+        return agent_call(
+            agent.handle_message,
+            user_id,
+            body.message_id,
+            body.text,
+            conversation_id=body.conversation_id,
+            location=body.location.model_dump() if body.location else None,
+            trip_id=body.trip_id,
+        )
+
+    @app.post("/api/agent/runs/{run_id}/resume")
+    def agent_resume(run_id: str, body: AgentResume, token: SessionCookie = None) -> dict:
+        user_id = current_user(token)
+        loc = body.location.model_dump() if body.location else None
+        return agent_call(agent.resume, user_id, run_id, loc)
+
+    @app.post("/api/agent/runs/{run_id}/cancel", status_code=202)
+    def agent_cancel(run_id: str, token: SessionCookie = None) -> dict:
+        if not agent.cancel(current_user(token), run_id):
+            raise HTTPException(404, MSG_AGENT_NOT_FOUND)
+        return {"message": "취소를 요청했어요."}
+
+    @app.get("/api/agent/runs/{run_id}")
+    def agent_run(run_id: str, detail: bool = False, token: SessionCookie = None) -> dict:
+        return agent_call(agent.run_status, current_user(token), run_id, detail)
+
+    @app.get("/api/agent/conversations/{conversation_id}")
+    def agent_conversation(conversation_id: str, token: SessionCookie = None) -> dict:
+        user_id = current_user(token)
+        found = store.get_conversation(user_id, conversation_id)
+        if found is None:
+            raise HTTPException(404, MSG_AGENT_NOT_FOUND)
+        state = found[0]
+        trip = store.get_trip(user_id, state["trip_id"]) if state.get("trip_id") else None
+        return {
+            "conversation_id": conversation_id,
+            "history": state.get("history", []),
+            "trip_id": state["trip_id"] if trip else None,
+            "trip_version": trip[1] if trip else None,
+        }
 
     if static_dir.is_dir():  # 빌드한 화면이 있으면 같은 주소에서 함께 제공
         app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")

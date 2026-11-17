@@ -58,8 +58,13 @@ NON_PEDESTRIAN_KINDS = frozenset({"자전거"})
 # 스냅 지점이 구간 끝에서 이 거리 안이면 새 노드를 만들지 않고 끝 노드를 그대로 쓴다
 # (길이 0 구간 방지용, 결과에 영향 거의 없음)
 END_MERGE_M = 1.0
+# 출발·도착 점이 가장 가까운 길에서 이보다 멀면 경로를 만들지 않는다
+# (엉뚱한 길에 붙은 경로를 확인된 경로처럼 보여주지 않기, REQUIREMENTS 12.8).
+# shortcut: 근거 없는 잠정값 300m, 시연 지점 실측 후 조정
+MAX_SNAP_M = 300.0
 
 MSG_NOT_NEAR_ROAD = "출발지나 도착지 근처에서 걸을 수 있는 길을 찾지 못했습니다."
+MSG_TOO_FAR_FROM_ROAD = "출발지나 도착지가 걸을 수 있는 길에서 너무 멀어 경로를 안내하지 않습니다."
 MSG_TOO_CLOSE = "출발지와 도착지가 너무 가까워 경로를 따로 안내하지 않습니다."
 MSG_NOT_CONNECTED = (
     "두 장소를 잇는 걷는 길을 찾지 못했습니다. 섬이 다르거나 길 자료가 끊겨 있을 수 있습니다."
@@ -200,6 +205,8 @@ class WalkRouter:
         if so is None or sd is None:
             return RoutePlan(_unavailable(MSG_NOT_NEAR_ROAD))
         snaps = (so.distance_m, sd.distance_m)
+        if max(snaps) > MAX_SNAP_M:
+            return RoutePlan(_unavailable(MSG_TOO_FAR_FROM_ROAD), *snaps)
         same = so.segment.seg_id == sd.segment.seg_id
         if same and abs(so.fraction - sd.fraction) * so.segment.length_m <= END_MERGE_M:
             return RoutePlan(_unavailable(MSG_TOO_CLOSE), *snaps)
@@ -249,6 +256,54 @@ class WalkRouter:
                 res = RouteResult(status=RouteStatus.DATA_UNAVAILABLE, caveats=(MSG_CHECK_FAILED,))
             routes[pref] = PlannedRoute(res, self._line(graph, res))
         return RoutePlan(routes, *snaps)
+
+    def distances_from(
+        self,
+        source: tuple[float, float],
+        targets: list[tuple[float, float]],
+        mobility: MobilityProfile = MobilityProfile.STANDARD,
+        cutoff_m: float | None = None,
+    ) -> list[float | None]:
+        """source(lon, lat)에서 targets 각각까지 보행망 최단 거리(m). 한 번의 탐색으로 모두 구한다
+        (§11.4 우회 시간 정렬용). 닿지 못하거나 cutoff를 넘으면 None.
+        스냅 거리(점에서 길까지)는 경로 길이와 같은 기준으로 넣지 않는다."""
+        policy = DEFAULT_MOBILITY_POLICIES[mobility]
+        src = self.net.snap(*source)
+        # 기준 보행망에는 통행 확인(PASS) 정보가 없어(계단만 앎) 확인 구간만 쓰는 휠체어는 갈 곳이 없다(§4.3)
+        if src is None or src.distance_m > MAX_SNAP_M or policy.verified_only:
+            return [None] * len(targets)
+        key = "flat" if policy.requires_step_free else "length"
+        seg = src.segment
+        g = self.net.graph
+        with self._lock:
+            g.add_edge("_src", seg.u, length=src.fraction * seg.length_m)
+            g.add_edge("_src", seg.v, length=(1 - src.fraction) * seg.length_m)
+            for e in (g["_src"][seg.u], g["_src"][seg.v]):
+                e["flat"] = None if seg.steps else e["length"]
+            try:
+                dist = nx.single_source_dijkstra_path_length(
+                    g, "_src", cutoff=cutoff_m, weight=lambda _u, _v, e: e[key]
+                )
+            finally:
+                g.remove_node("_src")
+        out: list[float | None] = []
+        for lon, lat in targets:
+            t = self.net.snap(lon, lat)
+            if t is None or t.distance_m > MAX_SNAP_M or (t.segment.steps and key == "flat"):
+                out.append(None)
+                continue
+            s, f = t.segment, t.fraction
+            if s.seg_id == seg.seg_id:
+                out.append(abs(f - src.fraction) * s.length_m)
+                continue
+            options = [
+                dist[n] + part
+                for n, part in ((s.u, f * s.length_m), (s.v, (1 - f) * s.length_m))
+                if n in dist
+            ]
+            best = min(options) if options else None
+            out.append(None if best is None or (cutoff_m and best > cutoff_m) else best)
+        return out
 
     def _baseline(self, o: str, d: str, pieces: list[_Piece], step_free: bool) -> float | None:
         """전체망 최단 거리. 계단을 못 가는 사람은 계단 구간을 뺀 거리

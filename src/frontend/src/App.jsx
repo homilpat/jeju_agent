@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, crimeOverlayUrl } from "./api";
-import { MSG_MAP_FAILED, MSG_SEARCH_FAILED, geocode, loadKakao, regionOf, resolvePlace, searchPlaces } from "./kakao";
+import { MSG_MAP_FAILED, MSG_SEARCH_FAILED, loadKakao, resolvePlace, searchPlaces } from "./kakao";
 
 // 피그마 메이크 디자인(제주 안전 여행 플래너)에서 옮김. 화면 데이터는 아직 예시값이며 API 연결 시 바꾼다.
 
@@ -494,7 +494,7 @@ function isPast(planner) {
   return Boolean(last) && last < todayLocal();
 }
 
-function Planners({ onOpen, onLogout, onAccountDeleted }) {
+function Planners({ onOpen, onLogout, onAccountDeleted, onChat }) {
   const [menu, setMenu] = useState(false);
   const [planners, setPlanners] = useState(null);
   const [error, setError] = useState("");
@@ -583,6 +583,9 @@ function Planners({ onOpen, onLogout, onAccountDeleted }) {
         ))}
       </section>
       <div className="bottom-action">
+        <button className="secondary-button" onClick={onChat}>
+          <Icon name="spark" /> AI에게 일정 부탁하기
+        </button>
         <button className="primary-button" onClick={createPlanner}>
           <Icon name="plus" /> 새 플래너 만들기
         </button>
@@ -697,6 +700,9 @@ function Editor({ plannerId, onBack, onTravel }) {
         places: sendable,
         route_choices,
         prefer_cctv: planner.prefer_cctv ?? null,
+        // Agent가 만든 일정의 조건과 이동 조건은 그대로 돌려보낸다(지우지 않게)
+        mobility: planner.mobility ?? null,
+        agent: planner.agent ?? null,
       });
       if (version.current === sent) {
         setDirty(false);
@@ -750,7 +756,7 @@ function Editor({ plannerId, onBack, onTravel }) {
       if (!from || !to || plans[key] || planErrors[key] || inflight.current.has(key)) return;
       inflight.current.add(key);
       api
-        .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }, Boolean(planner.prefer_cctv))
+        .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }, Boolean(planner.prefer_cctv), planner.mobility)
         .then((plan) => setPlans((all) => ({ ...all, [key]: plan })))
         .catch((e) => setPlanErrors((all) => ({ ...all, [key]: e.message })))
         .finally(() => inflight.current.delete(key));
@@ -1124,7 +1130,7 @@ function Travel({ planner, stop, setStop, onBack, onChat }) {
     if (given || !from || !to || stop in fetched) return;
     let alive = true;
     api
-      .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }, Boolean(planner.prefer_cctv))
+      .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }, Boolean(planner.prefer_cctv), planner.mobility)
       .then((plan) => {
         const route = plan.routes.find((r) => r.kind === kind);
         if (alive) setFetched((f) => ({ ...f, [stop]: route?.found ? { key: `t${stop}`, kind, path: route.line } : null }));
@@ -1193,25 +1199,9 @@ function Travel({ planner, stop, setStop, onBack, onChat }) {
   );
 }
 
-const NEARBY_KINDS = [
-  { key: "toilet", label: "화장실" },
-  { key: "wifi", label: "무료 와이파이" },
-  { key: "police", label: "경찰서·지구대" },
-];
-const NEARBY_SHOWN = 5; // 서버 상한과 같게(api/app.py NEARBY_LIMIT)
-const GEOCODE_AT_ONCE = 8; // shortcut: 동시에 보내는 주소 검색 수(근거 없음), 느리면 조정
 const MSG_NO_LOCATION = "지금 위치를 알 수 없어요. 브라우저에서 위치 사용을 허용해 주세요.";
-const MSG_OUTSIDE_JEJU = "제주 안에서만 찾을 수 있어요.";
-
-function distanceM(a, b) {
-  const rad = (d) => (d * Math.PI) / 180;
-  const h =
-    Math.sin(rad(b.lat - a.lat) / 2) ** 2 +
-    Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lon - a.lon) / 2) ** 2;
-  return 2 * 6371008.8 * Math.asin(Math.sqrt(h));
-}
-
-const formatDistance = (m) => (m >= 1000 ? `${(m / 1000).toFixed(1)}km` : `${Math.round(m)}m`);
+const SUGGESTIONS = ["근처 약국 찾아줘", "근처 화장실", "근처 공공 와이파이", "애월에서 빵집 두 곳 들르고 돌아오는 코스 짜줘"];
+const CONV_KEY = "jeju-agent-conversation";
 
 function myLocation() {
   return new Promise((resolve, reject) => {
@@ -1224,83 +1214,223 @@ function myLocation() {
   });
 }
 
-// 화장실 자료엔 위치가 없어 같은 읍면동 후보의 주소를 그때그때 카카오로 찾는다(결과는 저장하지 않음)
-// stillWanted(): 화면을 떠났거나 다른 검색을 시작했으면 false — 남은 주소 검색을 보내지 않는다
-async function nearbyToilets(me, stillWanted) {
-  const region = await regionOf(me.lat, me.lon);
-  if (!region) throw new Error(MSG_OUTSIDE_JEJU);
-  const candidates = await api.nearbyToilets(region.city, region.regions);
-  const found = [];
-  for (let i = 0; i < candidates.length; i += GEOCODE_AT_ONCE) {
-    if (!stillWanted()) return [];
-    const batch = candidates.slice(i, i + GEOCODE_AT_ONCE);
-    const spots = await Promise.all(
-      batch.map(async (t) => {
-        for (const address of t.addresses) {
-          const at = await geocode(address);
-          if (at) return at;
-        }
-        return null;
-      }),
-    );
-    batch.forEach((t, j) => spots[j] && found.push({ ...t, ...spots[j], distance_m: distanceM(me, spots[j]) }));
+function readConversation() {
+  try {
+    return sessionStorage.getItem(CONV_KEY);
+  } catch {
+    return null;
   }
-  return found.sort((a, b) => a.distance_m - b.distance_m).slice(0, NEARBY_SHOWN);
 }
 
-function toiletNotes(t) {
-  return [
-    t.hours && `여는 시간 ${t.hours}`,
-    t.accessible && "장애인 화장실",
-    t.diaper && "기저귀 교환대",
-    t.bell && "비상벨",
-  ].filter(Boolean);
+function saveConversation(id) {
+  try {
+    sessionStorage.setItem(CONV_KEY, id);
+  } catch {
+    // 저장이 막혀 있으면 새로고침 때 대화가 이어지지 않을 뿐이다
+  }
 }
 
-function Chat({ onBack }) {
-  const [kind, setKind] = useState(null);
-  const [me, setMe] = useState(null);
-  const [results, setResults] = useState(null);
+const newId = () =>
+  globalThis.crypto?.randomUUID?.() || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+
+const RUN_POLL_MS = 2000; // shortcut: 근거 없는 확인 간격, 서버 실행 제한(60초)에 맞춰 조정
+const RUN_POLL_TRIES = 40;
+
+// 같은 메시지가 아직 처리 중이면 끝날 때까지 기다린다. 서버가 꺼졌다 켜져 멈춘 실행이면 이어서 한다
+async function waitForRun(runId, location) {
+  for (let i = 0; i < RUN_POLL_TRIES; i += 1) {
+    await new Promise((r) => setTimeout(r, RUN_POLL_MS));
+    const run = await api.agentRun(runId);
+    if (run.response && !run.response.still_running) return run.response;
+    if (run.stage === "interrupted") return api.agentResume(runId, location);
+  }
+  throw new Error("답이 너무 오래 걸려요. 잠시 후 다시 물어봐 주세요.");
+}
+
+// 서버가 준 사용자 문장만 보여준다(상태 코드·ID는 화면 분기에만 씀)
+function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
+  const it = reply.itinerary;
+  const notes = [...(it?.notes || []), ...(reply.warnings || []), ...(reply.missing_data || [])];
+  return (
+    <>
+      {reply.questions?.map((q, i) => (
+        <div className="nearby-kinds" key={i}>
+          {reply.questions.length > 1 && <p className="result-count">{q.text}</p>}
+          {q.options?.map((o) => (
+            <button key={o.reply} onClick={() => onSend(o.reply)} disabled={busy}>
+              {o.label}
+            </button>
+          ))}
+          {q.needs_location && (
+            <button onClick={onUseLocation} disabled={busy}>
+              지금 위치 쓰기
+            </button>
+          )}
+        </div>
+      ))}
+      {reply.places?.length > 0 && !it && (
+        <div className="facility-list">
+          {reply.places.map((p, i) => (
+            <div className="facility-card" key={`${p.name}-${i}`}>
+              <b>
+                {reply.routes ? p.detail : `${i + 1}.`} {p.name}
+              </b>
+              {!reply.routes && <small>{[p.detail, p.address].filter(Boolean).join(" · ")}</small>}
+              {p.url && (
+                <a href={p.url} target="_blank" rel="noreferrer">
+                  카카오맵에서 보기
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {it && (
+        <div className="facility-list">
+          {it.stops.map((s) => (
+            <div className={`facility-card ${s.done ? "muted" : ""}`} key={s.number}>
+              <b>
+                {s.number}. {s.name}
+                {s.done ? " (다녀옴)" : s.fixed ? " (고정)" : ""}
+              </b>
+              <small>
+                {[s.detail, s.walk_minutes != null && !s.done ? `걸어서 약 ${s.walk_minutes}분` : null]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </small>
+              {s.url && (
+                <a href={s.url} target="_blank" rel="noreferrer">
+                  카카오맵에서 보기
+                </a>
+              )}
+            </div>
+          ))}
+          {it.back_label && (
+            <p className="result-count">
+              {it.back_label}
+              {it.back_minutes != null ? ` 약 ${it.back_minutes}분` : ""} · 모두 약 {it.total_minutes}분
+            </p>
+          )}
+          {reply.trip_id && reply.status === "ok" && (
+            <button className="primary-button" onClick={() => onOpenPlanner(reply.trip_id)}>
+              내 여행에서 열기
+            </button>
+          )}
+        </div>
+      )}
+      {reply.routes && (
+        <div className="facility-list">
+          {reply.routes.routes
+            .filter((r) => r.found)
+            .map((r) => (
+              <div className="facility-card" key={r.kind}>
+                <b>{r.title}</b>
+                <small>{r.text.join(" ")}</small>
+              </div>
+            ))}
+          {reply.routes.comparison.map((line) => (
+            <p className="result-count" key={line}>
+              {line}
+            </p>
+          ))}
+        </div>
+      )}
+      {notes.length > 0 && (
+        <div className="facility-list">
+          {notes.map((n) => (
+            <p className="result-count" key={n}>
+              {n}
+            </p>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+// 자연어 하나로 안내·경로·일정 만들기/고치기. 무엇을 할지는 서버 Agent가 정한다
+function Chat({ onBack, tripId, onOpenPlanner }) {
+  const [conversation, setConversation] = useState(readConversation);
+  const [log, setLog] = useState([]);
+  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const latest = useRef(0);
-  useEffect(() => () => void (latest.current += 1), []); // 화면을 떠나면 진행 중 검색을 멈춤
+  const [here, setHere] = useState(null); // 사용자가 "지금 위치 쓰기"를 눌렀을 때만
+  const [rulesOnly, setRulesOnly] = useState(false);
+  // 대화에서 방금 만든 여행이 생기면 그 여행을 고친다(들어올 때 보던 여행보다 우선)
+  const [activeTrip, setActiveTrip] = useState(tripId || null);
+  const running = useRef(null);
+  const bottom = useRef(null);
 
-  const find = async (key) => {
-    const mine = ++latest.current;
-    setKind(key);
+  useEffect(() => {
+    if (!conversation) return;
+    api
+      .agentConversation(conversation)
+      .then((c) => setLog((l) => (l.length ? l : c.history.map((h) => ({ role: h.role, text: h.text })))))
+      .catch(() => setConversation(null)); // 지난 대화가 없거나 만료됨: 새로 시작
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [log, busy]);
+
+  const send = async (said, location = here) => {
+    const message = said.trim();
+    if (!message || busy) return;
+    const id = newId();
+    running.current = id;
     setBusy(true);
     setError("");
-    setResults(null);
+    setText("");
+    setLog((l) => [...l, { role: "user", text: message }]);
+    // 대화 번호는 화면이 먼저 만들어 저장한다: 답을 받기 전에 새로고침해도 같은 대화로 이어진다
+    const conv = conversation || newId();
+    setConversation(conv);
+    saveConversation(conv);
+    const body = { message_id: id, conversation_id: conv, text: message, location, trip_id: activeTrip };
     try {
-      const here = await myLocation();
-      if (mine !== latest.current) return;
-      setMe(here);
-      const found =
-        key === "toilet"
-          ? await nearbyToilets(here, () => mine === latest.current)
-          : await api.nearby(key, here.lat, here.lon);
-      if (mine === latest.current) setResults(found);
+      let reply;
+      try {
+        reply = await api.agentMessage(body);
+      } catch (e) {
+        if (e.status !== 0) throw e;
+        reply = await api.agentMessage(body); // 연결이 끊겼으면 같은 메시지 번호로 한 번 더(중복 실행 안 됨)
+      }
+      if (reply.still_running) reply = await waitForRun(id, location);
+      if (reply.trip_id) setActiveTrip(reply.trip_id);
+      setRulesOnly(reply.interpreter === "rules");
+      setLog((l) => [...l, { role: "agent", text: reply.message, reply }]);
     } catch (e) {
-      // 서버가 제주 밖 좌표를 거절하면 입력 확인 문구가 오므로 제주 안내로 바꾼다
-      if (mine === latest.current) setError(e.status === 422 ? MSG_OUTSIDE_JEJU : e.message || MSG_SEARCH_FAILED);
+      setError(e.message);
     } finally {
-      if (mine === latest.current) setBusy(false);
+      running.current = null;
+      setBusy(false);
     }
   };
 
-  const label = NEARBY_KINDS.find((k) => k.key === kind)?.label;
-  const points = [
-    ...(me ? [{ key: "me", number: "나", name: "지금 위치", lat: me.lat, lon: me.lon }] : []),
-    ...(results || []).map((r, i) => ({ key: `r${i}`, number: i + 1, name: r.name, lat: r.lat, lon: r.lon })),
-  ];
+  const useLocation = async () => {
+    try {
+      const at = await myLocation();
+      setHere(at);
+      send("지금 위치", at);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const cancel = () => running.current && api.agentCancel(running.current).catch(() => {});
+
+  const latest = [...log].reverse().find((m) => m.reply)?.reply;
+  const points = (latest?.places || [])
+    .filter((p) => p.lat != null)
+    .map((p, i) => ({ key: `p${i}`, number: i + 1, name: p.name, lat: p.lat, lon: p.lon }));
+  const shown = latest?.routes?.routes.find((r) => r.found);
+  const lines = shown ? [{ key: "r", kind: shown.kind, path: shown.line }] : [];
 
   return (
     <main className="chat-screen">
-      <AppHeader title="근처 찾기" back={onBack} />
-      {me && (
+      <AppHeader title="AI 길잡이" back={onBack} />
+      {points.length > 0 && (
         <div className="nearby-map">
-          <KakaoMap points={points} />
+          <KakaoMap points={points} lines={lines} />
         </div>
       )}
       <section className="messages">
@@ -1308,36 +1438,76 @@ function Chat({ onBack }) {
           <span className="agent-avatar">
             <Icon name="spark" size={18} />
           </span>
-          <div className="message agent-message">무엇을 찾을까요? 지금 위치에서 가까운 곳을 알려드릴게요.</div>
+          <div className="message agent-message">
+            무엇을 도와드릴까요? 근처 시설 찾기, 걷는 길 비교, 들를 곳을 넣은 일정 만들기와 고치기를 할 수 있어요.
+          </div>
         </div>
-        <div className="nearby-kinds">
-          {NEARBY_KINDS.map((k) => (
-            <button key={k.key} className={k.key === kind ? "active" : ""} onClick={() => find(k.key)} disabled={busy}>
-              {k.label}
-            </button>
-          ))}
-        </div>
-        {busy && <p className="result-count">찾는 중이에요…</p>}
-        <FormError message={error} />
-        {results && !busy && (
-          <div className="facility-list">
-            {results.length === 0 && <p className="empty-note">근처에서 {label}을 찾지 못했어요.</p>}
-            {results.map((r, i) => (
-              <div className="facility-card" key={`${r.name}-${i}`}>
-                <b>
-                  {i + 1}. {r.name}
-                </b>
-                <small>
-                  {[`약 ${formatDistance(r.distance_m)}`, r.detail, ...(kind === "toilet" ? toiletNotes(r) : [])]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </small>
+        {rulesOnly && <p className="result-count">지금은 정해진 표현 위주로 알아들어요. 짧고 분명하게 말씀해 주세요.</p>}
+        {log.map((m, i) =>
+          m.role === "user" ? (
+            <div className="agent-row" key={i}>
+              <div className="message user-message">{m.text}</div>
+            </div>
+          ) : (
+            <div key={i}>
+              <div className="agent-row">
+                <span className="agent-avatar">
+                  <Icon name="spark" size={18} />
+                </span>
+                <div className="message agent-message">{m.text}</div>
               </div>
+              {m.reply && (
+                <AgentReply
+                  reply={m.reply}
+                  onSend={(t) => send(t)}
+                  onUseLocation={useLocation}
+                  onOpenPlanner={onOpenPlanner}
+                  busy={busy}
+                />
+              )}
+            </div>
+          ),
+        )}
+        {busy && (
+          <p className="result-count">
+            찾고 계산하는 중이에요…{" "}
+            <button className="text-button" onClick={cancel}>
+              그만하기
+            </button>
+          </p>
+        )}
+        <FormError message={error} />
+        <div ref={bottom} />
+      </section>
+      <form
+        className="chat-input"
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(text);
+        }}
+      >
+        {log.length === 0 && (
+          <div className="suggestions">
+            {SUGGESTIONS.map((s) => (
+              <button type="button" key={s} onClick={() => send(s)} disabled={busy}>
+                {s}
+              </button>
             ))}
-            {results.length > 0 && <p className="result-count">거리는 직선거리예요.</p>}
           </div>
         )}
-      </section>
+        <div className="input-row">
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="예: 근처 약국 어디야?"
+            aria-label="AI 길잡이에게 할 말"
+            maxLength={500}
+          />
+          <button type="submit" disabled={busy || !text.trim()} aria-label="보내기">
+            <Icon name="send" size={18} />
+          </button>
+        </div>
+      </form>
     </main>
   );
 }
@@ -1346,7 +1516,7 @@ function DesktopNav({ screen, username, hasTrip, onNavigate, onLogout }) {
   const items = [
     { label: "내 여행", icon: "calendar", screens: ["planners", "editor"], target: "planners" },
     { label: "여행 안내", icon: "walk", screens: ["travel"], target: "travel", needsTrip: true },
-    { label: "근처 찾기", icon: "spark", screens: ["chat"], target: "chat", needsTrip: true },
+    { label: "AI 길잡이", icon: "spark", screens: ["chat"], target: "chat" },
   ];
 
   return (
@@ -1469,6 +1639,7 @@ export default function App() {
             }}
             onLogout={logout}
             onAccountDeleted={signedOut}
+            onChat={() => setScreen("chat")}
           />
         )}
         {screen === "editor" && plannerId && (
@@ -1491,7 +1662,16 @@ export default function App() {
             onChat={() => setScreen("chat")}
           />
         )}
-        {screen === "chat" && <Chat onBack={() => setScreen(trip ? "travel" : "planners")} />}
+        {screen === "chat" && (
+          <Chat
+            onBack={() => setScreen(trip ? "travel" : "planners")}
+            tripId={trip?.id}
+            onOpenPlanner={(id) => {
+              setPlannerId(id);
+              setScreen("editor");
+            }}
+          />
+        )}
       </div>
     </div>
   );

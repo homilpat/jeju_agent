@@ -1,5 +1,15 @@
 # 구현 상태 (Implementation Status)
 
+## 0. Agent 확장 현황 (2026-11-18, REQUIREMENTS 12~14절)
+
+| 묶음 | 상태 | 증거 |
+|---|---|---|
+| A 자연어 조회 수직 연결 | 구현 | `agent/`, `POST /api/agent/messages`, 화면 "AI 길잡이", AT-01·02·03·06 |
+| B 플래너와 관찰 루프 | 구현(최소) | 일정 만들기·고정·우선·빼기·다녀옴, 계단 후보 제외, 원자적 버전 게시, AT-05·07·08·14 |
+| C 복구와 평가 | 구현(일부 NOT_RUN) | 체크포인트·재개·취소·멱등성·deadline, AgentEvals 실행, `docs/VALIDATION_REPORT.md` |
+
+세부: `docs/AGENT_IMPLEMENTATION_PLAN.md`, 운영: `docs/AGENT_RUNBOOK.md`. 아래 1~7절은 2026-11-03 기준 기록이다.
+
 기준 문서: REQUIREMENTS v3.1, ARCHITECTURE v3.1 · 최종 갱신: 2026-11-03
 
 > **테스트 통과 ≠ 기능 완성.** 아래 "구현"은 *코드 계약과 기반 로직이 존재하고 가상

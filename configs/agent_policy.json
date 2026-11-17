@@ -1,0 +1,24 @@
+{
+  "version": "agent-policy-2026-11-18-provisional",
+  "_note": "모든 숫자는 근거 없는 잠정 운영값이다(docs/development/open-decisions.md). 실측 후 조정한다.",
+  "deadline_s": 60,
+  "max_tool_calls": 40,
+  "max_llm_calls": 2,
+  "max_replans": 2,
+  "max_same_failure": 2,
+  "max_retries": 2,
+  "retry_backoff_s": 0.5,
+  "tool_timeout_s": {"default": 10, "compare_routes": 30, "get_travel_matrix": 30},
+  "max_candidates": 15,
+  "search_radius_m": 2000,
+  "widened_radius_m": 5000,
+  "max_stops": 6,
+  "trace_retention_days": 7,
+  "history_turns": 20,
+  "llm": {
+    "base_url": "https://api.meta.ai/v1",
+    "model": "muse-spark-1.3",
+    "timeout_s": 20,
+    "reasoning_effort": "low"
+  }
+}
