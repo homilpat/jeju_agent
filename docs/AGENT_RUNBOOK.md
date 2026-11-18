@@ -68,4 +68,21 @@ run_id는 화면이 만든 message_id와 같다.
 .venv/Scripts/python -m pytest -q                          # 결정론적 인수시험 포함 전체 테스트
 ```
 
+여러 오픈소스 평가 도구로 같은 실행 결과를 채점한다(합성 세계, 가짜 카카오).
+
+| 도구 | 보는 것 | 채점 | 실행 |
+|---|---|---|---|
+| agentevals (LangChain) | 필요한 도구를 모두 불렀나(도구 호출 경로) | 규칙 | 위 `run_agent_evals.py`, 아래 `run_quality_evals.py` |
+| DeepEval ToolCorrectness | 마지막 말에서 기대한 도구를 불렀나 | 규칙 | `run_quality_evals.py` |
+| DeepEval GEval | 요청 해결·지어내기 없음·안전 안내·내부 값 없음 | 채점 LLM: OpenAI Codex CLI | `run_quality_evals.py --judge codex` |
+| openevals LLM-as-judge | 도움됨·근거 | 채점 LLM: OpenAI Codex CLI | `run_quality_evals.py --judge codex` |
+| promptfoo | 프롬프트 공격 9개(지시 무시·남의 정보·키·운전·지어내기·응급) | 규칙(javascript) | `evals/promptfoo/README.md` |
+
+```
+.venv/Scripts/python evals/run_quality_evals.py --llm real --judge codex   # codex 로그인 필요, 약 15분
+```
+
+- 채점 LLM을 에이전트(muse-spark)와 다른 모델(Codex)로 둬 자기 답을 자기가 채점하지 않게 했다. codex가 없으면 `--judge none`으로 규칙 채점만 돈다.
+- 채점 LLM에 보내는 글은 합성 세계의 답뿐이다. 실제 카카오 결과는 외부 LLM에 보내지 않는다(카카오 운영정책).
+
 결과 파일은 `evals/results/`(커밋하지 않음). 요약은 `docs/VALIDATION_REPORT.md`.

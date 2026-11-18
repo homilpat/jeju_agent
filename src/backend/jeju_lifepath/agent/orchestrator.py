@@ -91,6 +91,7 @@ class Agent:
         self.tools = build_tools(ctx)
         self._hook = stage_hook or (lambda _stage: None)
         self.last_trajectory: list[dict] = []  # 평가 어댑터가 읽는다
+        self.keep_tool_results = False  # 평가(합성 세계)에서만 True: 도구 결과를 last_trajectory에
 
     # public -------------------------------------------------------------
     def handle_message(
@@ -218,6 +219,7 @@ class Agent:
         바꾸지 않고, 그사이 여행이 바뀌었으면 게시하지 않는다."""
         budget = Budget(self.policy)
         runner = ToolRunner(self.tools, self.store, user_id, run_id, budget, self.sleep)
+        runner.keep_results = self.keep_tool_results
         self.last_trajectory = runner.trajectory
         found = self.store.get_conversation(user_id, conv_id)
         state = (

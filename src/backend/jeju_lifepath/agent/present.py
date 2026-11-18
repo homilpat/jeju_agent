@@ -34,6 +34,7 @@ TOOL_WORD = {
     "find_route_stops": "가는 길에 들를 곳 찾기",
     "analyze_area_access": "지역 시설 거리 계산",
 }
+EMERGENCY_119 = "많이 아프거나 위급하면 걸어가지 말고 바로 119에 전화하렴."
 HOURS_UNVERIFIED = "영업시간은 내가 확인하지 못했단다. 가기 전에 카카오맵에서 꼭 확인해 보렴."
 GREEDY_NOTE = (
     "덜 돌아가는 순서로 골라 본 거란다. 이게 꼭 제일 좋은 조합이라고 장담하지는 못해."
@@ -117,6 +118,7 @@ KAKAO_TOOLS = frozenset(
         "find_nearby_facilities",
         "find_route_stops",
         "analyze_area_access",
+        "olle_courses",  # 시작·끝 지점 위치를 카카오 장소 검색으로 찾음
     }
 )
 STORED_NOTE = "장소 정보가 담긴 답은 저장해 두지 않는단다. 다시 보려면 한 번 더 물어보렴."
@@ -257,7 +259,8 @@ def unsupported_line(features: list[str]) -> str:
 def unsupported(ctx, p, version) -> dict:
     feats = p.unsupported_features or ["요청하신 기능"]
     msg = unsupported_line(feats)
-    if "차량 이동" in feats:
+    # LLM이 붙인 이름("택시 이동" 등)이 아니라 해석한 이동 수단으로 본다
+    if "차량 이동" in feats or p.slots.transport in ("car", "bus", "taxi"):
         msg += " 걷는 길로 안내받으려면 '걸어서'라고 말해 주렴."
     return _from(ctx, "unsupported", msg, version)
 
@@ -342,6 +345,7 @@ def facilities(ctx, p, at, r, version) -> dict:
             f"{at['label']} 근처에서 {word}을(를) 찾지 못했구나.",
             version,
             evidence=_evidence(source),
+            missing_data=[EMERGENCY_119] if p.slots.facility == "emergency" else [],
         )
     places = [
         {
@@ -370,7 +374,9 @@ def facilities(ctx, p, at, r, version) -> dict:
     if p.slots.facility == "night_pharmacy":
         missing.append("운영 시간은 바뀔 수 있단다. 가기 전에 전화로 확인해 보렴.")
     if p.slots.facility == "emergency":
-        missing.append("많이 아프거나 위급하면 걸어가지 말고 바로 119에 전화하렴.")
+        missing.append(EMERGENCY_119)
+    if p.slots.facility == "nursing_room":
+        missing.append("기관 안에 있는 수유실이라 여는 시간에만 쓸 수 있단다. 가기 전에 그 기관에 물어보렴.")
     if r.get("partial"):
         missing.append("후보가 많아서 일부만 살펴봤단다.")
     return _from(

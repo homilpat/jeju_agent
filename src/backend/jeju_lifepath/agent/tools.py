@@ -196,6 +196,9 @@ class ToolRunner:
         self.run_id = run_id
         self.budget = budget
         self.trajectory: list[dict] = []  # 평가용: 실제 호출한 도구와 인자(AgentEvals)
+        # 평가(합성 세계)에서만 켠다: 도구 결과를 trajectory에 함께 둔다. 실제 서비스에서는 카카오 결과를
+        # 요청 뒤에도 쥐고 있지 않게 끈다(카카오 운영정책)
+        self.keep_results = False
         self._sleep = sleep
 
     def check(self) -> None:
@@ -270,4 +273,6 @@ class ToolRunner:
             self.store.log_invocation_end(
                 inv_id, "ok", None, int((time.monotonic() - started) * 1000), _summary(result)
             )
+            if self.keep_results:
+                self.trajectory[-1]["result"] = result
             return result

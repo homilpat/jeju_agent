@@ -53,6 +53,16 @@ def read_csv(path: Path) -> list[dict]:
     return []
 
 
+def _yes_no(value: str | None) -> str | None:
+    """표 칸 값 -> "있음"/"없음". 그 밖(다른 칸을 읽은 경우)은 모름(None)."""
+    v = (value or "").replace(" ", "")
+    if v in ("있음", "유", "O", "○", "●") or v.startswith("있음"):
+        return "있음"
+    if v in ("없음", "무", "X", "×", "-없음") or v.startswith("없음"):
+        return "없음"
+    return None
+
+
 def _after(lines: list[str], label: str, skip: int = 0) -> str | None:
     """label 줄 다음(표 머리 skip줄 건너뜀)의 값."""
     for i, line in enumerate(lines):
@@ -74,6 +84,17 @@ def _label(lines: list[str], *labels: str) -> str | None:
     return None
 
 
+NO_WORDS = re.compile(r"없|미설치|불가|X\b")
+
+
+def _has_toilet(lines: list[str]) -> str | None:
+    """2020년 틀: 장애인 화장실 줄이 있으면 그 줄에 없다는 말이 없을 때만 "있음", 있으면 "없음"."""
+    hits = [x for x in lines if "장애인화장실" in x.replace(" ", "")]
+    if not hits:
+        return None
+    return "없음" if all(NO_WORDS.search(x) for x in hits) else "있음"
+
+
 def parse_doc_2020(text: str) -> dict:
     """2020년 틀 한글 문서(무장애여행정보_<장소>): 이동약자 안내·관람시간·관람료·주차·승강기."""
     lines = [x.strip() for x in text.splitlines() if x.strip() and not x.strip().startswith("그림")]
@@ -85,7 +106,7 @@ def parse_doc_2020(text: str) -> dict:
         "summary": summary,
         "address": _label(lines, "주소", "주 소"),
         "disabled_parking": "있음" if parking and re.search(r"[1-9]", parking) else None,
-        "disabled_toilet": "있음" if any("장애인 화장실" in x or "장애인화장실" in x for x in lines) else None,
+        "disabled_toilet": _has_toilet(lines),
         "audience": [],
         "companion": [],
         "closed": None,
@@ -112,9 +133,10 @@ def parse_doc(text: str) -> dict:
             audience.append(AUDIENCE[line])
             if i + 2 < len(lines) and "동반" in lines[i + 2]:
                 companion.append(AUDIENCE[line])
-    # "장애인 주차장 유무 / 장애인 주차 대수 / 위치" 머리 세 줄 뒤가 값
-    parking = _after(lines, "장애인 주차장 유무", skip=2)
-    toilet = _after(lines, "장애인 화장실", skip=2)
+    # "장애인 주차장 유무 / 장애인 주차 대수 / 위치" 머리 세 줄 뒤가 값. 표 칸 순서가 다른 문서는
+    # 엉뚱한 칸("구분", "5.3km")을 읽으므로 있음·없음으로 읽히는 값만 받는다
+    parking = _yes_no(_after(lines, "장애인 주차장 유무", skip=2))
+    toilet = _yes_no(_after(lines, "장애인 화장실", skip=2))
     notes = []
     for line in lines:
         # 짧은 표 칸과 코스 순서 줄("1. 주차장 → 2. …")은 빼고 설명 문장만
@@ -243,6 +265,9 @@ def build(hub: Path, portal: Path, hwp_dir: Path, hwp_text, zip_dir: Path | None
         if p["lat"] is None:
             continue
         p["barrier_points"] = sum(1 for x in p["points"] if BARRIER_WORDS.search(x["info"] + x["label"]))
-        p["toilet_points"] = sum(1 for x in p["points"] if "장애인화장실" in (x["info"] + x["label"]).replace(" ", ""))
+        p["toilet_points"] = sum(
+            1 for x in p["points"]
+            if "장애인화장실" in (x["info"] + x["label"]).replace(" ", "") and not NO_WORDS.search(x["info"])
+        )
         out.append(p)
     return sorted(out, key=lambda p: p["name"])

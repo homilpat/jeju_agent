@@ -184,8 +184,12 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
         else:
             picked = list(ctx.olle)
 
+        until = time.monotonic() + ctx.policy.timeout_for("olle_courses") * 0.8  # 재시도 전에 끝나게
+
         def spot(name: str | None):
-            hits = ctx.kakao.keyword(name) if name else []
+            if not name or time.monotonic() >= until:  # 시간을 넘기면 더 찾지 않는다(그 코스는 빠짐)
+                return None
+            hits = ctx.kakao.keyword(name)
             return (hits[0]["lon"], hits[0]["lat"]) if hits else None
 
         with ThreadPoolExecutor(max_workers=GEOCODE_WORKERS) as pool:

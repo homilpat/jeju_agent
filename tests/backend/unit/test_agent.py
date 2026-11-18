@@ -1641,3 +1641,40 @@ def test_ramps_and_no_step_are_not_barriers():
         assert not BARRIER_WORDS.search(good), good
     for bad in ["계단 2칸", "접근성 정보 있음 (계단 혹은 경사 있음. 길 상태 안 좋음)", "4.5cm 턱"]:
         assert BARRIER_WORDS.search(bad), bad
+
+
+# codex 검토(2026-11-19 밤) 회귀 테스트 ------------------------------------------------
+def test_olle_kakao_spots_not_stored(world):
+    r = say(world, "올레 7코스 알려줘")
+    assert r["places"]  # 화면에는 시작·끝 위치가 보이지만
+    dump = "\n".join(str(row) for table in ("agent_runs", "conversations")
+                     for row in world["store"]._rows(f"SELECT * FROM {table}"))  # noqa: S608
+    assert "한라공원" not in dump and "격자미술관" not in dump  # 카카오 검색 결과는 저장하지 않음
+
+
+def test_no_accessible_toilet_is_not_shown_as_present():
+    from jeju_lifepath.data.barrier_free import parse_doc
+
+    doc = parse_doc("박물관\n이동약자를 위한 안내: 경사로 있음\n장애인 화장실 없음")
+    assert doc["disabled_toilet"] == "없음"
+    assert parse_doc("박물관\n이동약자를 위한 안내: 좋음\n장애인화장실 1층")["disabled_toilet"] == "있음"
+
+
+def test_emergency_not_found_still_says_119(world):
+    world["ctx"].addr_facilities = {**world["ctx"].addr_facilities, "emergency": []}
+    r = say(world, "응급실 어디야", loc=LOC)
+    assert r["status"] == "ok" and not r["places"] and any("119" in m for m in r["missing_data"])
+
+
+def test_table_cells_read_as_yes_no_only():
+    from jeju_lifepath.data.barrier_free import _yes_no
+
+    assert [_yes_no(v) for v in ("있음", "유", "없음", "무", "구분", "5.3km", None)] == [
+        "있음", "있음", "없음", "없음", None, None, None]
+
+
+def test_taxi_refusal_tells_how_to_walk(world):
+    agent = Agent(world["store"], world["ctx"], clock=lambda: NOW, llm=MockLLM(lambda _t: json.dumps(
+        {"intent": "unsupported", "transport": "taxi", "unsupported_features": ["택시 이동"]})))
+    r = say(world, "택시 타고 격자마을 가는 길 알려줘", agent=agent)
+    assert r["status"] == "unsupported" and "'걸어서'라고 말해 주렴" in r["message"]
