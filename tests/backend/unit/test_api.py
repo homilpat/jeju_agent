@@ -99,6 +99,29 @@ def test_planner_crud(client):
     assert client.get(f"/api/planners/{pid}").status_code == 404
 
 
+def test_save_draft_needs_a_draft_of_your_own(client, tmp_path):
+    signup(client)
+    pid = client.post("/api/planners", json=planner()).json()["id"]
+    # 이미 저장된 여행은 다시 저장할 초안이 아님
+    assert client.post(f"/api/planners/{pid}/save").status_code == 404
+    store = client.app.state.agent.store
+    with store._tx() as db:  # AI 초안 하나를 직접 만든다
+        draft = db.execute(
+            "INSERT INTO planners (user_id, body, updated_at, draft, draft_of, draft_base)"
+            " SELECT user_id, body, updated_at, 1, id, version FROM planners WHERE id = ?", (pid,)
+        ).lastrowid
+    assert len(client.get("/api/planners").json()) == 1
+    client.post("/api/auth/logout")
+    signup(client, "bob")
+    assert client.post(f"/api/planners/{draft}/save").status_code == 404
+    client.post("/api/auth/logout")
+    client.post("/api/auth/login", json={"username": "tester", "password": PASSWORD})
+    client.put(f"/api/planners/{pid}", json=planner(3))  # 그사이 원래 여행을 손으로 고침
+    assert client.post(f"/api/planners/{draft}/save?overwrite=true").status_code == 409
+    assert client.post(f"/api/planners/{draft}/save").json() == {"id": draft}  # 새 여행으로는 됨
+    assert len(client.get("/api/planners").json()) == 2
+
+
 def test_planners_are_private_to_their_owner(client):
     signup(client, "alice")
     pid = client.post("/api/planners", json=planner()).json()["id"]
@@ -253,3 +276,54 @@ def test_routes_return_three_lines(tmp_path, monkeypatch):
     for r in body["routes"]:
         for t in r["text"]:
             assert_user_text(t)
+
+
+def test_conversation_list_and_delete(client):
+    signup(client)
+    store = client.app.state.agent.store
+    me = store._rows("SELECT id FROM users WHERE username = 'tester'")[0][0]
+    talk = {"history": [{"role": "user", "text": "애월에서 빵집 코스 짜줘"},
+                        {"role": "agent", "text": "몇 곳 들를까?"}]}
+    store.save_conversation(me, "a" * 32, talk)
+    store.save_conversation(me, "b" * 32, {"history": []})  # 말이 없는 대화는 목록에 안 나옴
+    with store._tx() as db:  # 그 대화의 실행 기록 하나
+        db.execute(
+            "INSERT INTO agent_runs (user_id, run_id, conversation_id, payload_hash, status, stage,"
+            " checkpoint, created_at, updated_at) VALUES (?, 'r1', ?, 'h', 'done', 'completed',"
+            " '{}', 't', 't')", (me, "a" * 32))
+    listed = client.get("/api/agent/conversations").json()["conversations"]
+    assert [c["title"] for c in listed] == ["애월에서 빵집 코스 짜줘"]
+    assert_user_text(listed[0]["title"])
+
+    client.post("/api/auth/logout")
+    signup(client, "bob")  # 남의 대화는 보이지도 지워지지도 않음
+    assert client.get("/api/agent/conversations").json()["conversations"] == []
+    assert client.delete(f"/api/agent/conversations/{'a' * 32}").status_code == 404
+    client.post("/api/auth/logout")
+    client.post("/api/auth/login", json={"username": "tester", "password": PASSWORD})
+
+    assert client.delete(f"/api/agent/conversations/{'a' * 32}").status_code == 204
+    assert client.get("/api/agent/conversations").json()["conversations"] == []
+    assert client.get(f"/api/agent/conversations/{'a' * 32}").status_code == 404
+    assert store._rows("SELECT * FROM agent_runs WHERE conversation_id = ?", ("a" * 32,)) == []
+
+
+def test_conversation_title_rename_and_clear(client):
+    signup(client)
+    store = client.app.state.agent.store
+    me = store._rows("SELECT id FROM users WHERE username = 'tester'")[0][0]
+    cid = "c" * 32
+    store.save_conversation(me, cid, {"history": [{"role": "user", "text": "애월 빵집 코스"}]})
+    url = f"/api/agent/conversations/{cid}"
+    assert client.patch(url, json={"title": "  애월 가족 여행  "}).json() == {
+        "title": "애월 가족 여행", "custom": True}
+    item = client.get("/api/agent/conversations").json()["conversations"][0]
+    assert item["title"] == "애월 가족 여행" and item["custom"]
+    assert client.patch(url, json={"title": "가" * 100}).json()["title"] == "가" * 40
+    assert client.patch(url, json={"title": None}).json() == {"title": None, "custom": False}
+    item = client.get("/api/agent/conversations").json()["conversations"][0]
+    assert item["title"] == "애월 빵집 코스" and not item["custom"]  # 기본 제목으로 돌아감
+    assert store.get_conversation(me, cid)[0]["history"]  # 제목만 바뀌고 기록은 그대로
+    client.post("/api/auth/logout")
+    signup(client, "bob")
+    assert client.patch(url, json={"title": "남의 것"}).status_code == 404

@@ -17,14 +17,16 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
+import shapely
+
 from jeju_lifepath.agent import present
 from jeju_lifepath.agent.itinerary import legs, plan_greedy, validate
 from jeju_lifepath.agent.llm import llm_parse
 from jeju_lifepath.agent.models import ParseResult, Slots, ToolError
-from jeju_lifepath.agent.parse import LODGING, SEOUL, parse_rules
+from jeju_lifepath.agent.parse import LODGING, SEOUL, THEME_CATEGORY, is_kind, parse_rules
 from jeju_lifepath.agent.services import AgentContext, build_tools
 from jeju_lifepath.agent.tools import Budget, BudgetExceeded, ToolRunner
-from jeju_lifepath.api.store import RunCancelled, Store, VersionConflict
+from jeju_lifepath.api.store import DraftOutdated, RunCancelled, Store, VersionConflict
 from jeju_lifepath.geo.geodesy import haversine_m
 from jeju_lifepath.routing.optimizer import SPEED_M_PER_MIN
 from jeju_lifepath.schemas import MobilityProfile, RoutePreference
@@ -102,8 +104,10 @@ class Agent:
         trip_id: int | None = None,
         map_view: dict | None = None,
         screen: dict | None = None,
+        detach_trip: bool = False,
     ) -> dict:
-        """screen: 사용자가 지금 보고 있는 화면({name, travel_stop?}). AI 해석에 함께 넘긴다.
+        """detach_trip: trip_id가 없으면 이 대화에 연결해 둔 여행도 쓰지 않는다(화면에서 연결을 끊음).
+        screen: 사용자가 지금 보고 있는 화면({name, travel_stop?}). AI 해석에 함께 넘긴다.
         map_view: 사용자가 지금 보고 있는 지도({center: {lat, lon}, south, west, north, east}).
         AI가 같은 지도를 보고 "여기", "이 근처"를 이해하게 한다. 저장하지 않는다."""
         conv_id = conversation_id or uuid.uuid4().hex
@@ -129,7 +133,7 @@ class Agent:
         if status == "duplicate":
             return stored or present.still_running(message_id, conv_id)
         return self._run(user_id, message_id, conv_id, text, location, trip_id, saved_parse=None,
-                         map_view=map_view, screen=screen)
+                         map_view=map_view, screen=screen, detach_trip=detach_trip)
 
     def resume(
         self, user_id: int, run_id: str, location: dict | None = None,
@@ -174,6 +178,7 @@ class Agent:
             pinned_version=cp.get("trip_version", 0) if "parse" in cp else None,
             map_view=map_view,
             screen=cp.get("screen"),
+            history=cp.get("history"),
         )
 
     def cancel(self, user_id: int, run_id: str) -> bool:
@@ -205,8 +210,11 @@ class Agent:
         pinned_version: int | None = None,
         map_view: dict | None = None,
         screen: dict | None = None,
+        detach_trip: bool = False,
+        history: list | None = None,
     ) -> dict:
-        """pinned_version: 재개일 때 실행 당시 대상 여행 버전(None 여행이면 0). 대화의 현재 여행으로
+        """history: 재개일 때 처음 실행 때의 앞 대화("거기"가 그사이 바뀐 대화를 가리키지 않게).
+        pinned_version: 재개일 때 실행 당시 대상 여행 버전(None 여행이면 0). 대화의 현재 여행으로
         바꾸지 않고, 그사이 여행이 바뀌었으면 게시하지 않는다."""
         budget = Budget(self.policy)
         runner = ToolRunner(self.tools, self.store, user_id, run_id, budget, self.sleep)
@@ -220,7 +228,9 @@ class Agent:
         conv_rev = found[1] if found else 0
         state.setdefault("prefs", {})
         explicit_trip = trip_id is not None  # 화면이 지금 열어 둔 여행(플래너 화면에서 AI와 같이 짤 때)
-        if pinned_version is None:
+        if detach_trip and trip_id is None:
+            state["trip_id"] = None
+        elif pinned_version is None:
             trip_id = trip_id or state.get("trip_id")
         trip = self.store.get_trip(user_id, trip_id) if trip_id else None
         if trip is None:
@@ -249,8 +259,12 @@ class Agent:
             return self._close(ctx, resp, "failed", state)
         try:
             self._stage(user_id, run_id, "interpreting")
+            talk = state.get("history", []) if history is None else history
+            # LLM에는 카카오 응답(가게 이름·주소·좌표)을 보내지 않는다(카카오 운영정책, 데브톡 152791).
+            # 대화 기록과 일정에는 카카오 자료가 없다(test_kakao_results_not_stored)
             parsed = saved_parse or self._parse(
-                text, state, bool(trip), budget, present.screen_note(screen, trip)
+                text, {**state, "history": talk}, bool(trip), budget,
+                present.screen_note(screen, trip),
             )
             parsed = self._merge_pending(parsed, text, state)
             ctx["parse"] = parsed
@@ -264,6 +278,7 @@ class Agent:
                     "trip_version": trip[1] if trip else 0,
                     "conversation_id": conv_id,
                     "screen": screen,  # 재개 때 같은 화면 맥락으로 다시 해석
+                    "history": talk,  # 같은 앞 대화로
                     "parse": parsed.model_dump(mode="json"),
                 },
             )
@@ -271,6 +286,10 @@ class Agent:
             return self._publish(ctx, draft)
         except NeedInput as q:
             state["pending"] = q.pending
+            # 버튼으로 줄 수 있는 답: 이 말이 그대로 오면 해석과 상관없이 앞 질문의 답으로 본다
+            state["pending_replies"] = [
+                o["reply"] for qq in q.questions for o in qq.get("options", [])
+            ]
             resp = present.needs_input(
                 run_id,
                 conv_id,
@@ -301,7 +320,7 @@ class Agent:
             return self._close(ctx, resp, "failed", state)
 
     def _close(self, ctx, resp, stage, state) -> dict:
-        # 대화 기록은 새로고침 후 화면 복원에만 쓴다(LLM에 보내지 않음). 횟수 제한 없이
+        # 대화 기록: 새로고침 후 화면 복원과 LLM의 앞 대화(카카오 자료는 넣지 않음). 횟수 제한 없이
         # 보유기간(trace_retention_days)이 지나면 대화째 지운다
         state["history"] = [
             *state.get("history", []),
@@ -331,19 +350,30 @@ class Agent:
     def _save_state(self, ctx, state: dict) -> None:
         """같은 대화의 다른 요청이 먼저 저장했으면(revision 다름) 최신 상태를 다시 읽어
         이번 요청의 대화 기록 두 줄과 바꾼 칸만 얹는다(마지막 저장이 앞 변경을 지우지 않게)."""
-        mine = {k: state.get(k) for k in ("pending", "options", "prefs", "picked")}
+        mine = {
+            k: state.get(k)
+            for k in ("pending", "pending_replies", "options", "prefs", "picked", "days")
+        }
         added = state["history"][-2:]
         if ctx.get("trip_id"):
             mine["trip_id"] = ctx["trip_id"]
         for _ in range(3):
             found = self.store.get_conversation(ctx["user_id"], ctx["conv_id"])
+            # 실행 중에 사용자가 이 대화 기록을 지웠다: 다시 만들지 않는다. 첫 메시지라 대화 행이 아직
+            # 없었으면, 지울 때 함께 지워지는 이 실행의 기록이 없는 것으로 안다
+            if found is None and (
+                ctx.get("conv_rev", 0) or self.store.get_run(ctx["user_id"], ctx["run_id"]) is None
+            ):
+                return
             base, rev = found if found else ({"history": []}, 0)
             if rev == ctx.get("conv_rev", 0):
                 merged = state
             else:
                 merged = {**base, **{k: v for k, v in mine.items() if v is not None}}
                 merged["history"] = [*base.get("history", []), *added]
-            if self.store.save_conversation(ctx["user_id"], ctx["conv_id"], merged, rev):
+            if self.store.save_conversation(
+                ctx["user_id"], ctx["conv_id"], merged, rev, run_id=ctx["run_id"]
+            ):
                 return
         log.warning("conversation state save kept losing the race")
 
@@ -352,12 +382,14 @@ class Agent:
         state = ctx["state"]
         state["pending"] = None
         state["options"] = draft.pop("options_state", None)
-        for k in ("mobility", "prefer_cctv"):
+        for k in ("mobility", "prefer_cctv", "route_preference"):
             v = getattr(ctx["parse"].slots, k)
             if v is not None:
                 state["prefs"][k] = v.value if hasattr(v, "value") else v
         if body is None:
             draft.setdefault("trip_id", ctx["trip_id"])
+            if draft.get("saved_trip"):
+                draft["unsaved"] = None
             draft.setdefault("trip_version", ctx["trip"][1] if ctx["trip"] else None)
             return self._close(ctx, draft, "completed", state)
         self._stage(ctx["user_id"], ctx["run_id"], "validating")
@@ -418,6 +450,8 @@ class Agent:
                     body = self.ctx.trip_validator(body)
                 expected = ctx["trip"][1]
                 cp["draft"] = present.for_storage(draft, True)
+        if "days_after" in ctx:  # 여러 날: 이 날을 게시했으니 남은 날만 기억
+            state["days"] = ctx["days_after"]
         self._hook("committed")
         return self._finish(
             ctx["user_id"],
@@ -434,7 +468,9 @@ class Agent:
     def _finish(
         self, user_id, run_id, conv_id, draft, trip_id, version, state, text, ctx=None
     ) -> dict:
-        draft = {**draft, "trip_id": trip_id, "trip_version": version}
+        # unsaved: 아직 내 여행에 넣지 않은 AI 초안(화면이 저장 버튼을 보일지 정하는 데만 씀)
+        info = self.store.draft_info(user_id, trip_id)
+        draft = {**draft, "trip_id": trip_id, "trip_version": version, "unsaved": info}
         state["trip_id"] = trip_id
         ctx = ctx or {
             "user_id": user_id,
@@ -451,16 +487,16 @@ class Agent:
     def _parse(
         self, text: str, state: dict, has_trip: bool, budget: Budget, screen_note: str = ""
     ) -> ParseResult:
-        rules = parse_rules(text, self.clock(), has_trip)
-        if self.llm is None or budget.llm_calls >= self.policy.max_llm_calls:
-            return rules
-        budget.llm_calls += 1
-        try:
-            return llm_parse(self.llm, text, rules, screen_note)
-        except (ToolError, ValueError) as e:
-            log.info("llm parse fell back to rules: %s", type(e).__name__)
-            rules.ambiguities = list(rules.ambiguities)
-            return rules.model_copy(update={"parser": "rules"})
+        now = self.clock()
+        # 버튼 답은 우리가 만든 정해진 문장이라 LLM 없이 푼다(빠르고 틀리지 않음)
+        button = text.strip() in state.get("pending_replies", [])
+        if self.llm is not None and not button and budget.llm_calls < self.policy.max_llm_calls:
+            budget.llm_calls += 1
+            try:
+                return llm_parse(self.llm, text, now, state.get("history", []), screen_note)
+            except (ToolError, ValueError) as e:
+                log.info("llm parse fell back to rules: %s", type(e).__name__)
+        return parse_rules(text, now, has_trip)  # LLM이 없거나 실패했을 때만
 
     def _merge_pending(self, parsed: ParseResult, text: str, state: dict) -> ParseResult:
         """앞 질문의 답이면 원래 요청을 이어간다(AT-01). 새 요청이면 앞 질문은 버린다."""
@@ -480,8 +516,13 @@ class Agent:
             state.pop("picked", None)  # 새 요청: 앞 요청에서 고른 후보는 쓰지 않음
             return parsed
         base = ParseResult.model_validate(pending)
-        answer_only = parsed.intent in ("chat", base.intent) or (
-            base.intent == "plan_modify" and parsed.intent in ("chat", "plan_modify")
+        # LLM은 앞 질문을 보고 답이면 같은 요청으로 해석한다. 그래서 LLM이 잡담으로 본 말은 답이 아님
+        # ("처음에 뭐라 했지?"가 앞 질문의 답으로 실행되지 않게). 규칙 해석은 잡담도 답으로 본다
+        talk = ("chat",) if parsed.parser == "rules" else ()
+        answer_only = text.strip() in state.get("pending_replies", []) or parsed.intent in (
+            *talk, base.intent
+        ) or (
+            base.intent == "plan_modify" and parsed.intent in (*talk, "plan_modify")
         )
         if not answer_only:
             return parsed
@@ -491,19 +532,21 @@ class Agent:
             if k in parsed.slot_sources:
                 merged[k] = v
                 sources[k] = "explicit"
-        if re.search(r"돌아|원점|제자리", text):
+        rules = parsed.parser == "rules"  # 글자 맞추기는 규칙 해석일 때만. LLM 값은 덮지 않음
+        if rules and re.search(r"돌아|원점|제자리", text):
             merged["round_trip"] = True
         if parsed.slots.use_current_location:
             merged["location_text"] = None
-        if re.fullmatch(r"\s*(걸어서|걸어|도보)\s*(로|요|갈게요|갈래요)?\s*", text):
+        if rules and re.fullmatch(r"\s*(걸어서|걸어|도보)\s*(로|요|갈게요|갈래요)?\s*", text):
             merged["transport"] = None
         changes = parsed.requested_changes or base.requested_changes
         return base.model_copy(
             update={
                 "slots": Slots(**merged),
                 "slot_sources": sources,
+                # 규칙 해석: 고칠 대상을 답했으면 앞의 "몇 번째?" 되묻기는 끝남. LLM 질문(지난 시각 등)은 남김
                 "ambiguities": parsed.ambiguities
-                if base.intent != "plan_modify" or not changes
+                if base.intent != "plan_modify" or not changes or parsed.parser != "rules"
                 else [],
                 "requested_changes": changes,
                 "reference_time": parsed.reference_time,
@@ -521,8 +564,11 @@ class Agent:
         handler = {
             "guide": self._guide,
             "route": self._route,
+            "route_poi": self._route_poi,
+            "area_gap": self._area_gap,
             "plan_create": self._plan_create,
             "plan_modify": self._plan_modify,
+            "save_trip": self._save_trip,
         }.get(p.intent)
         if handler is None:
             return present.chat(ctx, p, self.policy.version)
@@ -549,14 +595,14 @@ class Agent:
         ctx,
         *,
         text_slot: str = "location_text",
-        ask: str = "어디를 기준으로 찾을까요?",
+        ask: str = "어디를 기준으로 찾아 줄까?",
     ) -> dict:
         """기준 위치. 사용자가 말한 지명을 먼저, 없으면 화면이 보낸 현재 위치. 둘 다 없으면 묻는다."""
         text = getattr(p.slots, text_slot)
         if text:
             if text in LODGING:
                 raise NeedInput(
-                    [{"text": f"{text} 이름이나 주소를 알려 주세요."}], self._without(p, text_slot)
+                    [{"text": f"{text} 이름이나 주소를 알려 주렴."}], self._without(p, text_slot)
                 )
             return self._resolve(text, p, ctx, text_slot)
         if ctx["location"]:
@@ -582,17 +628,19 @@ class Agent:
         if picked and r["status"] == "ambiguous":
             match = [o for o in r["options"] if o["ref"] == picked]
             if match:
-                return {"lon": match[0]["lon"], "lat": match[0]["lat"], "label": match[0]["name"]}
+                return {"lon": match[0]["lon"], "lat": match[0]["lat"], "label": match[0]["name"],
+                        "ref": picked}
         if picked:  # 고른 후보가 다시 찾은 목록에 없으면 이름으로 다시 찾는다
             r2 = ctx["runner"].call("search_places", {"query": text})
             match = [o for o in r2["places"] if o["ref"] == picked]
             if match:
-                return {"lon": match[0]["lon"], "lat": match[0]["lat"], "label": match[0]["name"]}
+                return {"lon": match[0]["lon"], "lat": match[0]["lat"], "label": match[0]["name"],
+                        "ref": picked}
         if r["status"] == "found":
-            return {"lon": r["lon"], "lat": r["lat"], "label": r["label"]}
+            return {"lon": r["lon"], "lat": r["lat"], "label": r["label"], "ref": r.get("ref")}
         if r["status"] == "not_found":
             raise NeedInput(
-                [{"text": f"'{text}'을(를) 찾지 못했어요. 다른 이름이나 주소로 알려 주세요."}],
+                [{"text": f"'{text}'을(를) 찾지 못했구나. 다른 이름이나 주소로 알려 주렴."}],
                 self._without(p, slot),
             )
         items = [
@@ -607,7 +655,7 @@ class Agent:
         raise NeedInput(
             [
                 {
-                    "text": f"'{text}'(으)로 찾은 곳이 여러 곳이에요(입구·주차장 등). 어디로 할까요?",
+                    "text": f"'{text}'(으)로 찾은 곳이 여러 곳이구나(입구·주차장 등). 어디로 할까?",
                     "options": [
                         {"label": it["label"], "reply": f"{i + 1}번"} for i, it in enumerate(items)
                     ],
@@ -629,6 +677,8 @@ class Agent:
             "query": query,
             "near": {"lon": near["lon"], "lat": near["lat"]},
             "radius_m": radius,
+            "category": THEME_CATEGORY.get(query),
+            "only_kind": True,
         }
         found = ctx["runner"].call("search_places", args)["places"]
         if found or radius >= self.policy.widened_radius_m:
@@ -660,7 +710,7 @@ class Agent:
                 return present.place_choices(ctx, p, items, self.policy.version)
             return present.place_info(ctx, p, (exact or places)[:1], r, self.policy.version)
         at = self._point(
-            p, ctx, ask="어디 근처에서 찾을까요? 지금 위치를 쓰거나 동네 이름을 알려 주세요."
+            p, ctx, ask="어디 근처에서 찾아 줄까? 지금 위치를 쓰거나 동네 이름을 알려 주렴."
         )
         if p.slots.facility:
             r = ctx["runner"].call(
@@ -675,10 +725,15 @@ class Agent:
 
     def _route(self, p: ParseResult, ctx) -> dict:
         origin = self._point(
-            p, ctx, ask="어디에서 출발하세요? 지금 위치를 쓰거나 출발지 이름을 알려 주세요."
+            p, ctx, ask="어디에서 출발하니? 지금 위치를 쓰거나 출발지 이름을 알려 주렴."
         )
         if not p.slots.destination_text:
-            raise NeedInput([{"text": "어디로 가세요?"}], p.model_dump(mode="json"))
+            raise NeedInput([{"text": "어디로 가니?"}], p.model_dump(mode="json"))
+        # 경로 유형을 말하지 않았으면 묻는다(§6). 이 대화에서 이미 정했으면 다시 묻지 않는다
+        saved_pref = ctx["state"]["prefs"].get("route_preference")
+        pref = p.slots.route_preference or (RoutePreference(saved_pref) if saved_pref else None)
+        if pref is None:
+            raise NeedInput([present.route_preference_question()], p.model_dump(mode="json"))
         dest = self._point(p, ctx, text_slot="destination_text")
         mobility = self._mobility(p, ctx)
         prefer_cctv = bool(
@@ -695,7 +750,102 @@ class Agent:
                 "prefer_cctv": prefer_cctv,
             },
         )
-        return present.routes(ctx, p, origin, dest, mobility, r, self.policy.version)
+        return present.routes(ctx, p, origin, dest, mobility, r, self.policy.version, pref)
+
+    def _route_poi(self, p: ParseResult, ctx) -> dict:
+        """두 곳 사이 걷는 길에 들를 시설(§2 C02, §11.1 후보 규칙). 고르는 건 사용자(한 곳 단정 추천 안 함)."""
+        origin = self._point(
+            p, ctx, ask="어디에서 출발하니? 지금 위치를 쓰거나 출발지 이름을 알려 주렴."
+        )
+        if not p.slots.destination_text:
+            raise NeedInput([{"text": "어디로 가는 길이니?"}], p.model_dump(mode="json"))
+        dest = self._point(p, ctx, text_slot="destination_text")
+        mobility = self._mobility(p, ctx)
+        r = ctx["runner"].call(
+            "find_route_stops",
+            {
+                "origin": {"lon": origin["lon"], "lat": origin["lat"]},
+                "destination": {"lon": dest["lon"], "lat": dest["lat"]},
+                "mobility": mobility.value,
+                "facility": p.slots.facility,
+                "theme": None if p.slots.facility else (p.slots.themes or [None])[0],
+            },
+        )
+        return present.route_stops(
+            ctx, p, origin, dest, mobility, r, self._speed(mobility), self.policy.version
+        )
+
+    def _area_gap(self, p: ParseResult, ctx) -> dict:
+        """한 지역의 시설 접근 공백(§2 E01, FR-115). 지역 = 말한 읍면동(행정동 경계), 아니면 말한 곳이 속한 동."""
+        if not p.slots.facility:
+            raise NeedInput(
+                [
+                    {
+                        "text": "어떤 시설을 살펴볼까?",
+                        "options": [
+                            {"label": word, "reply": word}
+                            for word in ("약국", "화장실", "와이파이", "파출소")
+                        ],
+                    }
+                ],
+                p.model_dump(mode="json"),
+            )
+        areas = self.ctx.areas
+        if not areas:
+            return present.areas_unavailable(ctx, self.policy.version)
+        name, said = None, p.slots.location_text
+        if said:
+            # 말한 이름이 읍면동 이름이면 그 동("이도2동"), 앞부분만 맞으면 후보("이도" -> 이도1동·이도2동)
+            hits = [said] if said in areas else sorted(n for n in areas if n.startswith(said))
+            if len(hits) == 1:
+                name = hits[0]
+            elif len(hits) > 1:  # 고른 번호로 이 요청을 이어간다(_merge_pending의 후보 선택)
+                ctx["state"]["options"] = {
+                    "slot": "location_text",
+                    "items": [{"ref": n, "query": n} for n in hits],
+                    "parse": p.model_dump(mode="json"),
+                }
+                raise NeedInput(
+                    [{"text": "어느 동네를 살펴볼까?",
+                      "options": [{"label": n, "reply": f"{i + 1}번"} for i, n in enumerate(hits)]}],
+                    None,
+                )
+        place = None
+        if name is None:  # 동네 이름이 아니면 그 장소(또는 지금 위치)가 속한 읍면동
+            place = self._point(p, ctx, ask="어느 동네를 살펴볼까? 동네 이름을 알려 주렴.")
+            name = next(
+                (n for n, g in areas.items() if shapely.contains_xy(g, place["lon"], place["lat"])),
+                None,
+            )
+            if name is None:
+                return present.outside_areas(ctx, place, self.policy.version)
+        mobility = self._mobility(p, ctx)
+        r = ctx["runner"].call(
+            "analyze_area_access",
+            {"area": name, "facility": p.slots.facility, "mobility": mobility.value},
+        )
+        return present.area_access(
+            ctx, p, name, place, r, mobility, self._speed(mobility), self.policy.version
+        )
+
+    def _save_trip(self, p: ParseResult, ctx) -> dict:
+        """대화에서 만든 일정 초안을 내 여행에 넣는다(화면의 저장 버튼과 같은 동작)."""
+        trip_id = ctx.get("trip_id")
+        info = self.store.draft_info(ctx["user_id"], trip_id) if trip_id else None
+        if info is None:
+            return present.nothing_to_save(ctx, bool(trip_id), self.policy.version)
+        mode = p.slots.save_mode
+        if info["replaces"] and mode is None:
+            raise NeedInput([present.save_mode_question()], p.model_dump(mode="json"))
+        ctx["runner"].check()  # 취소·시간 초과 뒤에는 저장하지 않는다
+        try:
+            saved = self.store.save_draft(ctx["user_id"], trip_id, overwrite=mode == "overwrite")
+        except DraftOutdated:
+            return present.save_outdated(ctx, self.policy.version)
+        if saved is None:
+            return present.nothing_to_save(ctx, True, self.policy.version)
+        ctx["trip_id"] = saved
+        return present.saved(ctx, saved, trip_id, mode == "overwrite", self.policy.version)
 
     def _speed(self, mobility: MobilityProfile) -> float:
         return SPEED_M_PER_MIN[mobility]
@@ -726,22 +876,46 @@ class Agent:
 
     def _plan_create(self, p: ParseResult, ctx) -> dict:
         s = p.slots
+        days = ctx["state"].get("days")
+        if s.next_day and not s.themes:  # "2일차 일정도 짜줘": 앞서 말한 여러 날 중 다음 날
+            if not days or not days.get("left"):
+                raise NeedInput(
+                    [{"text": "이어서 짤 날이 없구나. 어떤 곳을 들르고 싶은지 말해 주렴."}], None
+                )
+            nxt = days["left"][0]
+            # 앞 날과 같은 조건(출발지·돌아오기·들를 곳 수)으로, 그날의 종류만 바꾼다
+            first = datetime.fromisoformat(days["first_date"]).date()
+            s = Slots(**{**days["base"], "themes": nxt["themes"], "day_no": nxt["day"],
+                         "date": (first + timedelta(days=nxt["day"] - 1)).isoformat()})
+            p = p.model_copy(update={"slots": s})
+            ctx["days_after"] = {**days, "left": days["left"][1:]}
+        elif len(s.day_themes) >= 2:  # noqa: PLR2004 - 여러 날 요청: 하루씩 짠다(첫날부터)
+            s = s.model_copy(update={"themes": s.day_themes[0], "theme_counts": {}, "day_no": 1})
+            p = p.model_copy(update={"slots": s})
+            base = s.model_dump(mode="json", exclude={"themes", "day_themes", "theme_counts",
+                                                     "next_day", "day_no", "date"})
+            ctx["days_after"] = {
+                "base": base,
+                # 1일차 날짜(말하지 않았으면 오늘). 2일차부터 하루씩 더한다
+                "first_date": s.date or self.clock().date().isoformat(),
+                "left": [{"day": i + 2, "themes": t} for i, t in enumerate(s.day_themes[1:])],
+            }
         questions = []
         if not s.themes:
-            questions.append({"text": "어떤 곳을 들르고 싶으세요? 예: 빵집, 카페, 바다"})
+            questions.append({"text": "어떤 곳을 들르고 싶니? 예: 빵집, 카페, 바다"})
         if not (s.stop_count or s.theme_counts or s.free_minutes or s.return_by):
-            questions.append({"text": "몇 곳을 들를까요? 아니면 몇 시까지 돌아와야 하나요?"})
+            questions.append({"text": "몇 곳을 들를까? 아니면 몇 시까지 돌아와야 하니?"})
         if not (s.destination_text or s.round_trip):
             questions.append(
                 {
-                    "text": "다 둘러본 뒤 어디로 가세요?",
+                    "text": "다 둘러본 뒤엔 어디로 가니?",
                     "options": [{"label": "출발한 곳으로 돌아오기", "reply": "돌아올게요"}],
                 }
             )
         if not (s.location_text or ctx["location"] or ctx.get("map_view")):
             questions.append(
                 {
-                    "text": "어디에서 출발하세요? 지금 위치를 쓰거나 출발지 이름을 알려 주세요.",
+                    "text": "어디에서 출발하니? 지금 위치를 쓰거나 출발지 이름을 알려 주렴.",
                     "needs_location": True,
                 }
             )
@@ -762,7 +936,7 @@ class Agent:
         budget_min = self._budget_minutes(s, direct)
         if budget_min is not None and budget_min <= 0:
             raise NeedInput(
-                [{"text": "돌아올 시각이 이미 지났어요. 시각을 다시 알려 주세요."}],
+                [{"text": "돌아올 시각이 벌써 지났구나. 시각을 다시 알려 주렴."}],
                 p.model_dump(mode="json"),
             )
         pool, widened = [], False
@@ -830,11 +1004,16 @@ class Agent:
             self.policy.version,
             created=True,
             commit=body,
+            next_day=(ctx.get("days_after") or {}).get("left", [None])[0]
+            if (ctx.get("days_after") or {}).get("left")
+            else None,
         )
 
     def _trip_body(self, p, s: Slots, stops, mobility, start, ctx, base: dict | None = None):
         base = base or {}
-        title = base.get("title") or ("·".join(s.themes) + " 코스")[:60]
+        title = base.get("title") or (
+            (f"{s.day_no}일차 · " if s.day_no else "") + "·".join(s.themes) + " 코스"
+        )[:60]
         places = [
             {"source": "kakao", "ref": x["ref"], "name": x["query"], "category": x["theme"]}
             for x in stops
@@ -852,6 +1031,8 @@ class Agent:
             "mobility": mobility.value,
             "agent": {
                 "anchor_text": s.location_text,
+                # 기준 지명으로 고른 카카오 장소 번호: 이름이 여러 곳에 맞아도 같은 곳으로 다시 찾는다
+                "anchor_ref": start.get("ref") if s.location_text else None,
                 # 지금 위치에서 시작한 일정만: 고칠 때 같은 출발·복귀점을 쓰려고 약 10m 단위로 저장
                 # (사용자 자신의 위치, 카카오 자료 아님. 여행을 지우면 함께 지워짐)
                 "start_point": None
@@ -884,7 +1065,7 @@ class Agent:
             raise NeedInput(
                 [
                     {
-                        "text": "고칠 여행 일정이 없어요. 먼저 일정을 만들어 주세요. 예: 애월에서 빵집 두 곳 들르는 코스 짜줘"
+                        "text": "고칠 여행 일정이 없구나. 먼저 일정을 만들어 보렴. 예: 애월에서 빵집 두 곳 들르는 코스 짜줘"
                     }
                 ],
                 None,
@@ -892,7 +1073,7 @@ class Agent:
         body, _version, _ = ctx["trip"]
         if any(pl["source"] != "kakao" for pl in body.get("places", [])):
             raise NeedInput(
-                [{"text": "직접 고른 공공시설이 들어 있는 일정은 여행 화면에서 고쳐 주세요."}], None
+                [{"text": "직접 고른 공공시설이 들어 있는 일정은 여행 화면에서 고쳐 주렴."}], None
             )
         refs = [pl["ref"] for pl in body.get("places", [])]
         ctx.setdefault("orig_refs", refs)
@@ -913,7 +1094,7 @@ class Agent:
         ]
         if not p.requested_changes:
             raise NeedInput(
-                [{"text": "일정을 어떻게 바꿀까요? 예: 2번 빼줘, 1번 다녀왔어, 카페 먼저"}],
+                [{"text": "일정을 어떻게 바꿔 줄까? 예: 2번 빼줘, 1번 다녀왔어, 카페 먼저"}],
                 p.model_dump(mode="json"),
             )
         s = Slots(
@@ -932,7 +1113,7 @@ class Agent:
                     raise NeedInput(
                         [
                             {
-                                "text": f"일정에 {c.target}번 장소가 없어요. 1~{len(stops)}번 중에서 골라 주세요."
+                                "text": f"일정에 {c.target}번 장소가 없구나. 1~{len(stops)}번 중에서 골라 주렴."
                             }
                         ],
                         None,
@@ -949,6 +1130,8 @@ class Agent:
         dist = self._dist_fn(ctx, mobility)
         p_for_point = p.model_copy(update={"slots": s})
         saved_start = agent.get("start_point")
+        if agent.get("anchor_ref") and not p.slots.location_text:
+            ctx["state"].setdefault("picked", {})["location_text"] = agent["anchor_ref"]
         if saved_start and not p.slots.location_text:
             start = {**saved_start, "label": "출발한 곳"}
         else:
@@ -998,18 +1181,23 @@ class Agent:
         찾지 못한 장소는 일정에 그대로 두고 구간 시간을 '확인 못 함'으로 둔다."""
         by_query: dict[str, list[dict]] = {}
         for st in stops:
-            if st["query"] not in by_query:
-                by_query[st["query"]] = ctx["runner"].call(
-                    "search_places",
-                    {
-                        "query": st["query"],
-                        "near": {"lon": anchor["lon"], "lat": anchor["lat"]},
-                        # 만들 때 지도 범위로 최대 20km까지 찾았을 수 있어 같은 최대 반경으로
-                        # (거리순이라 처음 고른 곳은 같은 기준점 주변 결과 안에 다시 나온다)
-                        "radius_m": KAKAO_MAX_RADIUS_M,
-                    },
-                )["places"]
-            hit = [x for x in by_query[st["query"]] if x["ref"] == st["ref"]]
+            # 만들 때 찾은 검색어는 분류(theme). 같은 기준점에서 거리순으로 찾으면 처음 고른 곳이
+            # 같은 순서 안에 다시 나온다(만들 때 반경은 최대 20km라 같은 최대 반경으로)
+            query = relocate_query(st)
+            if query not in by_query:
+                args = {
+                    "query": query,
+                    "near": {"lon": anchor["lon"], "lat": anchor["lat"]},
+                    "radius_m": KAKAO_MAX_RADIUS_M,
+                    "category": THEME_CATEGORY.get(query),
+                }
+                by_query[query] = ctx["runner"].call("search_places", {**args, "only_kind": True})[
+                    "places"
+                ]
+            hit = [x for x in by_query[query] if x["ref"] == st["ref"]]
+            if not hit and not THEME_CATEGORY.get(query):  # 종류 거르기 전에 만든 여행
+                hit = [x for x in ctx["runner"].call("search_places", args)["places"]
+                       if x["ref"] == st["ref"]]
             if hit:
                 st.update(
                     {k: hit[0][k] for k in ("name", "category", "address", "lon", "lat", "url")}
@@ -1053,6 +1241,50 @@ class Agent:
         new = {**picked[0], "fixed": False, "completed": False}
         first_open = next((i for i, x in enumerate(stops) if not x["completed"]), len(stops))
         stops.insert(first_open if c.op == "prioritize" else len(stops), new)
+
+
+def relocate_query(stop: dict) -> str:
+    """저장된 장소를 다시 찾을 검색어: 만들 때 쓴 분류(theme), 없으면 저장된 검색어."""
+    return stop.get("theme") or stop["query"]
+
+
+def locate_trip(kakao, body: dict) -> dict[str, dict]:
+    """AI가 만든 여행의 장소를 만들 때와 같은 기준(기준점 둘레 거리순, 같은 검색어)으로 다시 찾는다.
+    플래너 화면이 쓴다(이름·좌표는 응답에만, 저장 안 함). 기준점을 정할 수 없으면 빈 사전."""
+    meta = body.get("agent") or {}
+    anchor = meta.get("start_point")
+    if anchor is None and meta.get("anchor_text"):
+        text, ref = meta["anchor_text"], meta.get("anchor_ref")
+        at = None if ref else kakao.address(text)
+        if at:
+            anchor = {"lon": at[0], "lat": at[1]}
+        else:
+            found = kakao.keyword(text)
+            pick = [p for p in found if p["ref"] == ref] if ref else (
+                found if len(found) == 1 else [p for p in found if p["name"] == text])
+            anchor = {"lon": pick[0]["lon"], "lat": pick[0]["lat"]} if len(pick) == 1 else None
+    if anchor is None:
+        return {}
+    stops = {s["ref"]: s for s in meta.get("stops", [])}
+    out, by_query = {}, {}
+    for pl in body.get("places", []):
+        st = stops.get(pl["ref"])
+        if pl.get("source") != "kakao" or st is None:
+            continue
+        query = relocate_query(st)
+        if query not in by_query:
+            at = (anchor["lon"], anchor["lat"])
+            code = THEME_CATEGORY.get(query)
+            if code:
+                by_query[query] = kakao.category(code, at, KAKAO_MAX_RADIUS_M)
+            else:  # 만들 때와 같은 검색(최대 45곳에서 종류 거르기) + 거르기 전에 만든 여행용 첫 쪽
+                every, _ = kakao.search_all(query=query, near=at, radius_m=KAKAO_MAX_RADIUS_M)
+                by_query[query] = [p for p in every if is_kind(p, query)] + kakao.keyword(
+                    query, at, KAKAO_MAX_RADIUS_M)
+        hit = [x for x in by_query[query] if x["ref"] == pl["ref"]]
+        if hit:
+            out[pl["ref"]] = hit[0]
+    return out
 
 
 def _fit(choices: list, n: int) -> list:

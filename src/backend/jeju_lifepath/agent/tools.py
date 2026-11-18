@@ -47,6 +47,10 @@ class Point(BaseModel):
 class SearchPlacesIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     query: str = Field(min_length=1, max_length=40)
+    # 카카오 분류 그룹 코드(예: CT1 문화시설). 있으면 검색어 대신 분류로, 위치(near·radius_m) 필수
+    category: str | None = Field(default=None, pattern=r"^[A-Z]{2}\d$")
+    # 일정 후보로 찾을 때: query(종류)의 카카오 분류에 맞는 곳만(이름만 같은 다른 곳 빼기)
+    only_kind: bool = False
     near: Point | None = None
     radius_m: int | None = Field(default=None, ge=100, le=20000)
 
@@ -68,6 +72,26 @@ class CompareRoutesIn(BaseModel):
     destination: Point
     mobility: MobilityProfile = MobilityProfile.STANDARD
     prefer_cctv: bool = False
+
+
+class RouteStopsIn(BaseModel):
+    """두 곳 사이 걷는 길에 들를 시설(§2 C02). facility 또는 theme(카카오 검색어) 중 하나."""
+
+    model_config = ConfigDict(extra="forbid")
+    origin: Point
+    destination: Point
+    mobility: MobilityProfile = MobilityProfile.STANDARD
+    facility: Literal["pharmacy", "toilet", "wifi", "police"] | None = None
+    theme: str | None = Field(default=None, min_length=1, max_length=40)
+
+
+class AreaAccessIn(BaseModel):
+    """한 읍면동(행정동 경계) 안 길 교차점에서 가장 가까운 시설까지 걷는 거리(§2 E01)."""
+
+    model_config = ConfigDict(extra="forbid")
+    area: str = Field(min_length=1, max_length=20)  # 읍면동 이름(경계 자료의 이름과 같아야 함)
+    facility: Literal["pharmacy", "toilet", "wifi", "police"]
+    mobility: MobilityProfile = MobilityProfile.STANDARD
 
 
 class MatrixIn(BaseModel):
@@ -100,12 +124,10 @@ class BudgetExceeded(Exception):
 
 
 def _mask(value):
-    """기록용 인자: 좌표는 소수 둘째 자리(약 1km)까지만 남긴다(AG-406, AG-605)."""
+    """기록용 인자: 좌표는 남기지 않는다. 카카오에서 받은 좌표는 줄여도 저장하면 안 되고
+    (카카오 운영정책, 데브톡 152854), 사용자 위치와 구분할 수 없어 모두 뺀다(AG-406, AG-605)."""
     if isinstance(value, dict):
-        return {
-            k: (round(v, 2) if k in ("lat", "lon") and isinstance(v, float) else _mask(v))
-            for k, v in value.items()
-        }
+        return {k: (None if k in ("lat", "lon") else _mask(v)) for k, v in value.items()}
     if isinstance(value, list):
         return [_mask(v) for v in value[:10]]
     return value

@@ -1,6 +1,7 @@
-"""자연어 요청 -> ParseResult (규칙 기반). LLM이 없거나 실패해도 이 파서로 동작한다(AG-204).
+"""자연어 요청 -> ParseResult (규칙 기반). LLM이 없거나 실패했을 때만 쓴다(AG-204).
+LLM 모드에서 아래 낱말 목록은 프롬프트의 참고 예시로만 쓰인다(llm.SYSTEM_PROMPT).
 
-시각은 언제나 이 규칙으로 푼다: 서버 시각, Asia/Seoul 기준(AG-105). LLM 결과의 시각은 쓰지 않는다.
+시각은 서버 시각, Asia/Seoul 기준(AG-105).
 shortcut: 정해진 낱말·어미 목록으로 의도를 추정하는 휴리스틱이다. 목록에 없는 표현은 놓치며,
 놓친 요청은 "chat"(도움말)로 떨어진다. 실 사용 문장을 모아 목록을 늘리거나 LLM 모드로 보완한다.
 """
@@ -38,7 +39,62 @@ THEMES = {
     "미술관": "미술관",
     "공원": "공원",
     "숲": "숲길",
+    # 넓은 말은 카카오 분류(아래 THEME_CATEGORY)로 찾는다
+    "문화예술": "문화시설",
+    "문화": "문화시설",
+    "예술": "문화시설",
+    "관광지": "관광명소",
+    "명소": "관광명소",
 }
+# 한 말이 여러 종류를 뜻할 때(사용자 결정 2026-11-18: 자연 = 오름·해변·숲길)
+THEME_GROUPS = {"자연": ["오름", "해수욕장", "숲길"]}
+# 카카오 로컬 분류 그룹 코드로 찾는 종류(카카오 개발자 문서의 category_group_code)
+THEME_CATEGORY = {"문화시설": "CT1", "관광명소": "AT4"}
+# 키워드로 찾는 종류는 이름만 맞는 다른 곳(주차장·학원·모텔 등)이 섞인다. 일정에 넣을 후보는
+# 카카오 분류 경로가 아래로 시작하는 곳만 쓴다. 값은 2026-11-18 제주시청·서귀포·애월 둘레 실제
+# 카카오 키워드 검색 결과의 분류 경로에서 가져왔다(docs/development/open-decisions.md).
+THEME_PATHS = {
+    "빵집": [("음식점", "간식", "제과,베이커리")],
+    "카페": [("음식점", "카페")],
+    "해수욕장": [("여행", "관광,명소", "해수욕장,해변")],
+    "오름": [("여행", "관광,명소", "오름")],
+    "숲길": [("여행", "관광,명소", "도보여행"), ("여행", "관광,명소", "숲")],
+    "맛집": [("음식점",)],
+    "시장": [("가정,생활", "시장")],
+    "박물관": [("문화,예술", "문화시설", "박물관")],
+    "미술관": [("문화,예술", "문화시설", "미술관")],
+    "공원": [("여행", "공원")],
+}
+
+
+def themes_in(text: str, names: list[str | None] = ()) -> list[str]:
+    """말 속 장소 종류들. 지명·가게 이름(names) 안의 글자는 빼고 본다("매일올레시장"의 '시장'은 종류가 아님)."""
+    for name in names:
+        if name:
+            text = text.replace(name, " ")
+    found: list[str] = []
+    for word in [*THEMES, *THEME_GROUPS]:
+        if word in text:
+            found += [k for k in theme_keys(word) if k not in found]
+    return found
+
+
+def is_kind(place: dict, theme: str) -> bool:
+    """카카오 분류 경로가 그 종류에 맞는지. 맛집은 카페를 뺀 음식점. 정해 두지 않은 종류는 거르지 않음."""
+    rules = THEME_PATHS.get(theme)
+    if rules is None:
+        return True
+    path = tuple(place.get("category_path") or ())
+    if theme == "맛집" and path[:2] == ("음식점", "카페"):
+        return False
+    return any(path[: len(r)] == r for r in rules)
+
+
+def theme_keys(word: str) -> list[str]:
+    """사용자 말 하나 -> 찾을 종류들. 모르는 말이면 빈 목록."""
+    if word in THEME_GROUPS:
+        return list(THEME_GROUPS[word])
+    return [THEMES[word]] if word in THEMES else []
 FACILITIES = {
     "약국": "pharmacy",
     "화장실": "toilet",
@@ -83,6 +139,32 @@ LODGING = {"숙소", "호텔", "집", "펜션", "게스트하우스"}
 PLAN_WORDS = r"짜\s*줘|짜줘|짜 줘|일정|코스|투어|돌아오|들르|들렀|순례|계획"
 MODIFY_WORDS = r"빼|제외|유지|고정|먼저|부터|다녀왔|갔다\s*왔|들렀어|방문했|바꿔|추가|넣어|대신"
 ROUTE_WORDS = r"가는\s*길|가는 법|경로|길\s*알려|길 찾|어떻게 가|까지 가|으로 가|로 가"
+# "가는 길에 약국", "가다가 들를 화장실": 길 위에서 들를 곳
+ON_ROUTE_WORDS = r"가는\s*길에|길에|가다가|가는\s*중|중간에|도중"
+# "약국 부족한 곳", "화장실 공백": 지역의 시설 접근 공백
+GAP_WORDS = r"공백|부족|모자라|사각지대|멀리\s*있는\s*곳|접근성"
+SAVE_WORDS = r"저장"
+# 여러 날 요청에서 날을 가르는 말(순서대로 1일차, 2일차…). "마지막"은 마지막 날
+DAY_MARK = (
+    r"첫\s*날|첫째\s*날|하루는|1\s*일\s*차|이튿날|둘째\s*날|2\s*일\s*차|셋째\s*날|3\s*일\s*차"
+    r"|넷째\s*날|4\s*일\s*차|마지막\s*날|마지막에는|마지막엔|마지막에"
+)
+NEXT_DAY = r"다음\s*날|\d\s*일\s*차|이어서"
+
+
+def day_themes_in(text: str, names: list[str | None] = ()) -> list[list[str]]:
+    """날 표시로 나눈 조각마다 종류. 종류가 있는 날이 둘 이상일 때만(아니면 빈 목록)."""
+    cuts = [m.start() for m in re.finditer(DAY_MARK, text)]
+    if len(cuts) < 2:  # noqa: PLR2004 - 날이 둘 이상이어야 여러 날
+        return []
+    parts = [text[a:b] for a, b in zip(cuts, [*cuts[1:], len(text)], strict=True)]
+    days = [themes_in(part, names) for part in parts]
+    days = [d for d in days if d]
+    return days if len(days) >= 2 else []  # noqa: PLR2004
+
+
+# "애월읍", "삼양1동", "한림리" 같은 지역 이름(공백 분석의 지역)
+AREA_NAME = r"([가-힣0-9]+(?:읍|면|동|리))(?=\s|$|에|의)"
 
 
 def _num(word: str) -> int | None:
@@ -197,7 +279,7 @@ def _place_before(text: str, markers: str) -> str | None:
     word = m.group(1).split()[-1]
     if len(word) > 2 and word[-1] in "은는":  # "한림공원은" -> "한림공원" ("마을"의 을은 남김)
         word = word[:-1]
-    if word in NOT_PLACE or word in THEMES or word in FACILITIES:
+    if word in NOT_PLACE or word in THEMES or word in THEME_GROUPS or word in FACILITIES:
         return None
     return word
 
@@ -220,13 +302,6 @@ def parse_rules(text: str, now: datetime, has_trip: bool = False) -> ParseResult
         if word in t:
             put("facility", kind)
             break
-    themes: list[str] = []
-    for word, keyword in THEMES.items():
-        if word in raw and keyword not in themes:
-            themes.append(keyword)
-    if themes:
-        put("themes", themes)
-
     if "유모차" in raw:
         put("mobility", MobilityProfile.STROLLER)
     elif "휠체어" in raw:
@@ -253,6 +328,14 @@ def parse_rules(text: str, now: datetime, has_trip: bool = False) -> ParseResult
         put("destination_text", dest)
     if re.search(r"돌아오|돌아와|원점|제자리", raw):
         put("round_trip", True)
+    themes = themes_in(raw, [slots.location_text, slots.destination_text])
+    if themes:
+        put("themes", themes)
+    days = day_themes_in(raw, [slots.location_text, slots.destination_text])
+    if days:
+        put("day_themes", days)
+    if re.search(NEXT_DAY, raw) and not themes:
+        put("next_day", True)
 
     date, depart, ret, ambiguities = resolve_clock(raw, now)
     if date:
@@ -274,10 +357,30 @@ def parse_rules(text: str, now: datetime, has_trip: bool = False) -> ParseResult
         if free:
             put("free_minutes", free)
 
+    # 덮어쓰기는 부정("덮어쓰지 말고")이 없을 때만. 둘 다 말하거나 둘 다 없으면 정하지 않고 묻는다
+    over = re.search(r"덮어", raw) and not re.search(r"덮어\s*쓰지\s*(말|마|않)|덮지\s*(말|마|않)", raw)
+    new = re.search(r"새\s*여행|새로", raw)
+    if over and not new:
+        put("save_mode", "overwrite")
+    elif new and not over:
+        put("save_mode", "new")
+    if re.search(GAP_WORDS, raw) and not slots.location_text:
+        # "애월읍 약국 부족", "격자마을 약국 공백": 읍면동 이름, 없으면 시설 이름 바로 앞 낱말
+        area = re.search(AREA_NAME, raw)
+        word = area.group(1) if area else _place_before(raw, "|".join(FACILITIES))
+        if word and word not in NOT_PLACE:
+            put("location_text", word)
+
     changes, change_amb = ([], [])
     plan_like = re.search(PLAN_WORDS, raw)
     modify_like = has_trip and re.search(MODIFY_WORDS, raw)
-    if modify_like and not re.search(r"짜\s*줘|새로|새 일정", raw):
+    if re.search(SAVE_WORDS, raw) and not re.search(PLAN_WORDS + "|" + ROUTE_WORDS, raw):
+        intent = "save_trip"
+    elif (slots.facility or themes) and re.search(GAP_WORDS, raw):
+        intent = "area_gap"
+    elif (slots.facility or themes) and slots.destination_text and re.search(ON_ROUTE_WORDS, raw):
+        intent = "route_poi"
+    elif modify_like and not re.search(r"짜\s*줘|새로|새 일정", raw):
         intent = "plan_modify"
         changes, change_amb = _changes(raw, themes)
         if (
@@ -287,7 +390,7 @@ def parse_rules(text: str, now: datetime, has_trip: bool = False) -> ParseResult
         ):
             slots.destination_text = None
             sources.pop("destination_text", None)
-    elif plan_like and (themes or slots.stop_count or slots.free_minutes):
+    elif plan_like and (themes or slots.stop_count or slots.free_minutes or slots.next_day):
         intent = "plan_create"
     elif slots.destination_text and re.search(ROUTE_WORDS + "|까지", raw):
         intent = "route"

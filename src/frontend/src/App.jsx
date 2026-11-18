@@ -4,6 +4,9 @@ import { MSG_MAP_FAILED, MSG_SEARCH_FAILED, loadKakao, resolvePlace, searchPlace
 
 // 피그마 메이크 디자인(제주 안전 여행 플래너)에서 옮김. 화면 데이터는 아직 예시값이며 API 연결 시 바꾼다.
 
+// 제주 본섬 실제 해안선: 통계청 2013 시도 경계(github.com/southkorea/southkorea-maps)를 24칸에 맞춰 줄임
+const JEJU_PATH = "M18.5 5.7L19.0 6.0L19.8 5.9L19.9 6.4L20.7 7.1L21.1 6.9L21.9 7.1L22.3 7.9L22.0 8.4L22.2 8.9L22.9 8.9L23.0 9.2L22.6 9.6L22.1 11.1L22.1 11.6L21.6 11.8L21.1 12.3L21.0 12.9L20.3 13.6L20.4 13.9L20.1 14.4L19.3 14.7L18.4 14.5L17.5 15.5L17.1 15.4L16.0 15.8L15.1 15.7L14.6 15.9L14.0 16.7L13.4 16.9L13.0 16.6L12.0 16.8L11.2 16.7L10.9 17.1L10.3 17.1L9.8 17.3L9.2 16.7L8.7 17.0L8.1 16.6L7.3 17.0L5.5 16.8L4.9 17.3L4.8 17.9L4.2 18.3L3.5 17.7L3.1 16.9L2.1 16.5L1.6 16.1L1.0 15.0L1.2 14.8L1.1 13.9L1.2 13.2L1.9 12.5L2.5 12.1L2.8 11.6L3.2 11.5L3.8 10.8L3.8 10.2L5.1 9.6L5.2 9.1L6.0 9.1L7.4 8.3L7.6 8.5L10.0 7.6L10.4 7.2L11.0 7.4L11.7 6.9L12.0 7.3L12.9 7.1L13.3 6.7L14.3 6.7L14.6 6.1L15.1 6.2L16.7 6.1L17.0 5.9L17.8 6.0L18.5 5.7Z";
+
 function Icon({ name, size = 20, strokeWidth = 2 }) {
   const paths = {
     arrow: (
@@ -57,11 +60,11 @@ function Icon({ name, size = 20, strokeWidth = 2 }) {
         <path d="M7 3v8M4 3v5a3 3 0 0 0 6 0V3M7 11v10M16 3v18M16 3c3 2 4 5 4 8h-4" />
       </>
     ),
+    // 점은 한라산
     island: (
       <>
-        <path d="M4 17c3-3 5-3 8-1s5 2 8-1" />
-        <path d="M7 14c1-4 3-6 5-8 2 2 3 4 4 8" />
-        <path d="M9 9c-2-1-3-1-5 0M13 7c1-2 2-3 4-4" />
+        <path d={JEJU_PATH} />
+        <circle cx="11.5" cy="12.5" r="1" fill="currentColor" stroke="none" />
       </>
     ),
     lamp: (
@@ -259,10 +262,22 @@ function KakaoMap({ points, lines = [], crime = false, onView }) {
       const bounds = m.getBounds();
       const [sw, ne] = [bounds.getSouthWest(), bounds.getNorthEast()];
       const [width, height] = [box.current.clientWidth, box.current.clientHeight];
+      const metersPerPx =
+        ((ne.getLng() - sw.getLng()) * 111320 * Math.cos((((sw.getLat() + ne.getLat()) / 2) * Math.PI) / 180)) / width;
+      if (metersPerPx < CRIME_MIN_M_PER_PX) {
+        latest += 1; // 받는 중인 그림이 뒤늦게 붙지 않게
+        overlay.setMap(null);
+        setCrimeError(MSG_CRIME_ZOOMED);
+        return;
+      }
       // 화면 가운데(지도 좌표계 기준). 그림도 같은 좌표계라 가운데끼리 맞추면 전체가 맞는다
       const middle = m.getProjection().coordsFromContainerPoint(new kakao.maps.Point(width / 2, height / 2));
       const img = new Image(width, height);
       img.className = "crime-overlay";
+      // 지도와 똑같은 픽셀 크기로 고정한다. 기본 CSS(img max-width:100%, height:auto)가 너비 없는
+      // 카카오 겹침 칸 안에서 그림을 줄여 길과 안 맞거나 안 보였음(2026-11-19 실제 앱에서 0×0으로 측정)
+      img.style.width = `${width}px`;
+      img.style.height = `${height}px`;
       img.alt = "";
       const mine = ++latest;
       img.onload = () => {
@@ -286,11 +301,19 @@ function KakaoMap({ points, lines = [], crime = false, onView }) {
         height,
       });
     };
+    // 확대·축소가 시작되면 바로 숨긴다: 예전 그림은 크기가 그대로라 바뀌는 동안 길과 어긋나 보임.
+    // 받는 중인 그림도 버리고, 확대가 끝나면(idle) 새 크기로 다시 그린다
+    const hide = () => {
+      latest += 1;
+      overlay.setMap(null);
+    };
     draw();
     kakao.maps.event.addListener(m, "idle", draw);
+    kakao.maps.event.addListener(m, "zoom_start", hide);
     return () => {
       latest += 1;
       kakao.maps.event.removeListener(m, "idle", draw);
+      kakao.maps.event.removeListener(m, "zoom_start", hide);
       overlay.setMap(null);
       setCrimeError("");
     };
@@ -306,6 +329,12 @@ function KakaoMap({ points, lines = [], crime = false, onView }) {
 }
 
 const MSG_CRIME_FAILED = "범죄주의구간 지도를 불러오지 못했어요. 지도를 조금 움직이면 다시 시도해요.";
+const MSG_CRIME_ZOOMED = "많이 확대하면 지도의 길과 몇 m 어긋나서 범죄주의구간 표시를 숨겼어요. 조금 축소하면 다시 보여요.";
+// 이보다 자세히(1픽셀이 0.75m 미만) 보면 숨긴다 = 카카오 확대 1·2단계(0.25·0.5m)는 숨기고 3단계(약 1m)부터 보인다.
+// 2026-11-19 제주시청·노형·서귀포 세 곳을 1~4단계로 찍어 비교: 1단계에서는 안전지도의 실제 도로 폭이
+// 카카오 지도의 다듬은 길보다 넓어 건물을 덮었고 2단계부터는 맞았다. 표본이 세 곳이라 2단계도 숨겨 여유를 둠
+// (사용자 결정, open-decisions)
+const CRIME_MIN_M_PER_PX = 0.75;
 
 // 범죄주의구간 표시 여부를 먼저 묻고, 네라고 하면 표시한다. 색 설명·출처를 함께 보여준다
 function CrimeToggle({ value, onChange }) {
@@ -365,7 +394,11 @@ function Welcome({ onStart }) {
         <div className="cloud cloud-a" />
         <div className="cloud cloud-b" />
         <div className="island-shape">
-          <Icon name="island" size={86} strokeWidth={1.4} />
+          <svg viewBox="0.5 5.2 23 13.6" aria-hidden="true">
+            <path d={JEJU_PATH} fill="#bdd5c1" />
+          </svg>
+          {/* 섬을 빚은 설문대할망이 한라산 자리에 앉아 맞이한다 */}
+          <img className="island-halmang" src="/halmang/welcome-cut.webp" alt="두 팔 벌려 반기는 설문대할망" />
         </div>
         <span className="path-dot dot-a" />
         <span className="path-dot dot-b" />
@@ -421,6 +454,12 @@ function Auth({ onLogin }) {
   const [busy, setBusy] = useState(false);
   return (
     <main className="auth-screen">
+      <div className="auth-island" aria-hidden="true">
+        <svg viewBox="0.5 5.2 23 13.6">
+          <path d={JEJU_PATH} />
+        </svg>
+        <img src="/halmang/welcome-cut.webp" alt="" />
+      </div>
       <div className="brand-mark">
         <Icon name="island" size={34} />
       </div>
@@ -517,7 +556,10 @@ function isPast(planner) {
   return Boolean(last) && last < todayLocal();
 }
 
-function Planners({ onOpen, onLogout, onAccountDeleted, onChat }) {
+// onChat(id, fresh): 그 여행을 AI 길잡이로 가져가 지도에 경로를 그리고 같이 이야기한다.
+// fresh면 지금 대화는 지난 대화에 남겨 두고 새 대화에서 연다
+function Planners({ onOpen, onChat, onLogout, onAccountDeleted }) {
+  const [asking, setAsking] = useState(null); // 이어서/새 대화를 고르는 중인 여행
   const [menu, setMenu] = useState(false);
   const [planners, setPlanners] = useState(null);
   const [error, setError] = useState("");
@@ -528,15 +570,6 @@ function Planners({ onOpen, onLogout, onAccountDeleted, onChat }) {
       .then(setPlanners)
       .catch((e) => setError(e.message));
   }, []);
-
-  const createPlanner = async () => {
-    try {
-      const { id } = await api.createPlanner({ title: "새 여행", places: [], route_choices: [] });
-      onOpen(id);
-    } catch (e) {
-      setError(e.message);
-    }
-  };
 
   const featuredId = planners?.find((p) => !isPast(p))?.id;
   return (
@@ -579,11 +612,11 @@ function Planners({ onOpen, onLogout, onAccountDeleted, onChat }) {
         </div>
         <FormError message={error} />
         {planners?.length === 0 && (
-          <p className="empty-note">아직 만든 여행이 없어요. 새 플래너를 만들어 보세요.</p>
+          <p className="empty-note">아직 저장한 여행이 없어요. AI 길잡이에게 일정을 부탁하고 저장해 보세요.</p>
         )}
         {planners?.map((p) => (
+          <div className="planner-card-wrap" key={p.id}>
           <button
-            key={p.id}
             className={`planner-card ${p.id === featuredId ? "featured" : ""}`}
             onClick={() => onOpen(p.id)}
           >
@@ -603,17 +636,48 @@ function Planners({ onOpen, onLogout, onAccountDeleted, onChat }) {
               </span>
             </div>
           </button>
+          {asking === p.id ? (
+            <div className="planner-ai planner-ai-choice" role="group" aria-label="어느 대화에서 볼까요?">
+              <button onClick={() => onChat(p.id, false)}>지금 대화에 이어서</button>
+              <button onClick={() => onChat(p.id, true)}>새 대화로</button>
+              <button onClick={() => setAsking(null)} aria-label="닫기">
+                <Icon name="close" size={14} />
+              </button>
+            </div>
+          ) : (
+            <button
+              className="planner-ai"
+              // 이어 갈 대화가 없으면 묻지 않고 바로 연다
+              onClick={() => (readConversation(CONV_KEY) ? setAsking(p.id) : onChat(p.id, true))}
+              aria-label={`${p.title} 여행을 AI 길잡이에서 보기`}
+            >
+              <Icon name="spark" size={14} /> AI 길잡이에서 보기
+            </button>
+          )}
+          </div>
         ))}
       </section>
-      <div className="bottom-action">
-        <button className="secondary-button" onClick={onChat}>
-          <Icon name="spark" /> AI에게 일정 부탁하기
-        </button>
-        <button className="primary-button" onClick={createPlanner}>
-          <Icon name="plus" /> 새 플래너 만들기
-        </button>
-      </div>
     </main>
+  );
+}
+
+// 플래너에 장소를 더했을 때 할망 말풍선: 앞 장소에서 그 구간에 고른 경로로 걸어서 몇 분.
+// 고른 경로가 없으면 다른 경로로 바꿔 말하지 않고, 계산 실패(error)와 길 없음을 나눠 말한다
+function DistanceBubble({ plan, error, kind, onClose }) {
+  const route = plan?.routes.find((r) => r.kind === kind);
+  const text = error
+    ? `앞 장소에서 여기까지 길을 계산하지 못했구나. ${error}`
+    : route?.found
+      ? `앞 장소에서 여기까지 ${route.title}로 걸어서 약 ${Math.round(route.minutes)}분이란다.`
+      : `앞 장소에서 여기까지 ${route?.title || "고른 길"}은 찾지 못했구나. 아래 구간에서 다른 길과 이유를 볼 수 있단다.`;
+  return (
+    <div className="distance-bubble" role="status">
+      <HalmangFace />
+      <p>{text}</p>
+      <button className="icon-button" onClick={onClose} aria-label="말풍선 닫기">
+        <Icon name="close" size={18} />
+      </button>
+    </div>
   );
 }
 
@@ -649,36 +713,45 @@ function RouteCard({ index, active, onChoose, onOpen }) {
   );
 }
 
-// onView: 지금 보이는 지도 범위(AI가 같이 봄). apiRef: AI 대화창이 보내기 전에 저장하고, 손으로 고친 게 있는지 본다
-function Editor({ plannerId, onBack, onTravel, onView, apiRef }) {
-  const [sheet, setSheet] = useState("none");
-  const [planner, setPlanner] = useState(null);
-  const [saved, setSaved] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [error, setError] = useState("");
-  const version = useRef(0); // 저장 중에 또 고쳤는지 알기 위한 수정 횟수
+// 저장된 여행 -> 지도에 그릴 장소와 고른 경로선. 장소는 열 때마다 다시 찾고 경로도 다시 계산한다
+// (카카오 좌표·가공 자료는 저장하지 않음). 플래너와 AI 길잡이가 같이 쓴다
+function useTripMap(planner, plannerId) {
   // 카카오 장소 ID -> 지금 검색한 결과(메모리에만). null은 검색은 됐는데 못 찾은 곳
   const [coords, setCoords] = useState({});
   const [lookupFailed, setLookupFailed] = useState(false);
-  const [routeIndex, setRouteIndex] = useState(0); // 경로 비교 창을 연 구간
   // 구간(앞 장소>뒤 장소) -> 서버가 계산한 세 경로. 저장하지 않고 열 때마다 다시 계산한다
   const [plans, setPlans] = useState({});
   const [planErrors, setPlanErrors] = useState({});
   const inflight = useRef(new Set());
-  const [crime, setCrime] = useState(null); // 범죄주의구간 표시: null = 아직 안 물어봄
-
   useEffect(() => {
-    api
-      .getPlanner(plannerId)
-      .then(setPlanner)
-      .catch((e) => setError(e.message));
+    // 다른 여행으로 바뀌면 앞 여행의 위치·경로를 버린다
+    setCoords({});
+    setPlans({});
+    setPlanErrors({});
+    setLookupFailed(false);
   }, [plannerId]);
 
   // 저장된 장소는 ID·이름뿐이라 열 때마다 다시 검색해 좌표를 얻는다.
+  // AI가 고른 장소는 서버가 만들 때와 같은 기준(기준점 둘레 거리순)으로, 직접 담은 장소는 담을 때처럼 이름으로.
   // 검색 자체가 실패한 곳은 기록하지 않아 다음 변경 때 다시 시도한다.
+  const aiRefs = new Set((planner?.agent?.stops || []).map((s) => s.ref));
   useEffect(() => {
-    const todo = (planner?.places || []).filter((p) => p.source === "kakao" && !(p.ref in coords));
+    if (!planner || !aiRefs.size) return;
+    api
+      .locatedPlaces(plannerId)
+      .then(({ places }) =>
+        setCoords((c) => {
+          const next = { ...c };
+          planner.places.forEach((p) => aiRefs.has(p.ref) && !(p.ref in next) && (next[p.ref] = places[p.ref] || null));
+          return next;
+        }),
+      )
+      .catch(() => setLookupFailed(true));
+  }, [planner?.agent, plannerId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const todo = (planner?.places || []).filter(
+      (p) => p.source === "kakao" && !aiRefs.has(p.ref) && !(p.ref in coords),
+    );
     if (todo.length === 0) return;
     Promise.allSettled(todo.map(resolvePlace)).then((results) => {
       setCoords((c) => {
@@ -690,8 +763,68 @@ function Editor({ plannerId, onBack, onTravel, onView, apiRef }) {
     });
   }, [planner?.places]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const where = (p) => (p.source === "public" ? (p.lat != null ? p : null) : coords[p.ref]);
+  const mapPoints = (planner?.places || []).flatMap((p, i) => {
+    const at = where(p);
+    return at ? [{ key: `${p.source}-${p.ref}`, number: i + 1, name: at.name || p.name, lat: at.lat, lon: at.lon }] : [];
+  });
+  const segKey = (i) => {
+    const [a, b] = [planner.places[i], planner.places[i + 1]];
+    // CCTV 선택이나 이동 조건(휠체어·유모차)이 바뀌면 다른 키가 되어 경로를 다시 계산한다
+    return `${a.source}-${a.ref}>${b.source}-${b.ref}${planner.prefer_cctv ? "+cctv" : ""}+${planner.mobility || ""}`;
+  };
+  const routeLines = (planner?.places || []).slice(0, -1).flatMap((_, i) => {
+    const kind = planner.route_choices[i] || DEFAULT_ROUTE;
+    const route = plans[segKey(i)]?.routes.find((r) => r.kind === kind);
+    return route?.found ? [{ key: segKey(i), kind, path: route.line, index: i }] : [];
+  });
+  // 위치를 아는 구간은 바로 계산해 둔다(다시 열었을 때도 고른 경로선이 보이게). 경로는 저장하지 않는다
+  useEffect(() => {
+    (planner?.places || []).slice(0, -1).forEach((_, i) => {
+      const key = segKey(i);
+      const [from, to] = [where(planner.places[i]), where(planner.places[i + 1])];
+      if (!from || !to || plans[key] || planErrors[key] || inflight.current.has(key)) return;
+      inflight.current.add(key);
+      api
+        .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }, Boolean(planner.prefer_cctv), planner.mobility)
+        .then((plan) => setPlans((all) => ({ ...all, [key]: plan })))
+        .catch((e) => setPlanErrors((all) => ({ ...all, [key]: e.message })))
+        .finally(() => inflight.current.delete(key));
+    });
+  }); // 렌더마다 확인하지만 이미 계산했거나 계산 중인 구간은 건너뜀
+
+  const notFound = (planner?.places || []).some((p) => p.source === "kakao" && coords[p.ref] === null);
+
+  return { coords, setCoords, lookupFailed, plans, planErrors, setPlanErrors, where, mapPoints, routeLines, segKey, notFound };
+}
+
+// apiRef: AI 대화로 가기 전에 손으로 고친 것을 저장한다
+function Editor({ plannerId, onBack, onTravel, onDeleted, apiRef }) {
+  const [sheet, setSheet] = useState("none");
+  const [planner, setPlanner] = useState(null);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState("");
+  const version = useRef(0); // 저장 중에 또 고쳤는지 알기 위한 수정 횟수
+  const [routeIndex, setRouteIndex] = useState(0); // 경로 비교 창을 연 구간
+  const [crime, setCrime] = useState(null); // 범죄주의구간 표시: null = 아직 안 물어봄
+  const [bubble, setBubble] = useState(null); // 방금 더한 장소로 가는 구간 번호
+
+  useEffect(() => {
+    api
+      .getPlanner(plannerId)
+      .then(setPlanner)
+      .catch((e) => setError(e.message));
+  }, [plannerId]);
+
+  const { coords, setCoords, lookupFailed, plans, planErrors, setPlanErrors, where, mapPoints, routeLines, segKey, notFound } =
+    useTripMap(planner, plannerId);
+
   const addPlace = (found, searched) => {
     setCoords((c) => ({ ...c, [found.id]: found }));
+    // 말풍선이 기다릴 구간 번호: 앞 장소 -> 새 장소(장소가 하나뿐이면 구간 없음)
+    setBubble(planner.places.length > 0 ? planner.places.length - 1 : null);
     // 카카오 자료는 장소 ID만 저장한다. name 칸에는 사용자가 직접 쓴 검색어를 저장하고
     // (다시 열 때 이 검색어로 다시 찾음), 화면에 보이는 가게 이름·분류·좌표는 메모리에만 둔다.
     const place = { source: "kakao", ref: found.id, name: searched };
@@ -748,48 +881,29 @@ function Editor({ plannerId, onBack, onTravel, onView, apiRef }) {
     if (!dirty || window.confirm("저장하지 않은 내용이 있어요. 저장하지 않고 나갈까요?")) onBack();
   };
 
+  const remove = async () => {
+    if (!window.confirm("이 여행을 지울까요? 지우면 되돌릴 수 없어요.")) return;
+    setSaving(true); // 지우는 동안 저장·여행 시작·다시 지우기를 막는다
+    try {
+      await api.deletePlanner(plannerId);
+      onDeleted(plannerId);
+    } catch (e) {
+      setError(e.message);
+      setSaving(false);
+    }
+  };
+
   const startTravel = async () => {
     if (!dirty || (await save())) onTravel(planner, { points: mapPoints, lines: routeLines });
   };
 
   const removePlace = (index) => {
+    setBubble(null); // 구간 번호가 바뀌므로 말풍선을 닫는다
     const places = planner.places.filter((_, i) => i !== index);
     // 구간 선택은 장소 사이마다 하나: 지운 장소에 붙은 구간 하나를 같이 뺀다
     const route_choices = planner.route_choices.filter((_, i) => i !== Math.max(0, index - 1));
     update({ places, route_choices: route_choices.slice(0, Math.max(0, places.length - 1)) });
   };
-
-  const where = (p) => (p.source === "public" ? (p.lat != null ? p : null) : coords[p.ref]);
-  const mapPoints = (planner?.places || []).flatMap((p, i) => {
-    const at = where(p);
-    return at ? [{ key: `${p.source}-${p.ref}`, number: i + 1, name: at.name || p.name, lat: at.lat, lon: at.lon }] : [];
-  });
-  const segKey = (i) => {
-    const [a, b] = [planner.places[i], planner.places[i + 1]];
-    // CCTV 선택이 바뀌면 다른 키가 되어 경로를 다시 계산한다
-    return `${a.source}-${a.ref}>${b.source}-${b.ref}${planner.prefer_cctv ? "+cctv" : ""}`;
-  };
-  const routeLines = (planner?.places || []).slice(0, -1).flatMap((_, i) => {
-    const kind = planner.route_choices[i] || DEFAULT_ROUTE;
-    const route = plans[segKey(i)]?.routes.find((r) => r.kind === kind);
-    return route?.found ? [{ key: segKey(i), kind, path: route.line, index: i }] : [];
-  });
-  // 위치를 아는 구간은 바로 계산해 둔다(다시 열었을 때도 고른 경로선이 보이게). 경로는 저장하지 않는다
-  useEffect(() => {
-    (planner?.places || []).slice(0, -1).forEach((_, i) => {
-      const key = segKey(i);
-      const [from, to] = [where(planner.places[i]), where(planner.places[i + 1])];
-      if (!from || !to || plans[key] || planErrors[key] || inflight.current.has(key)) return;
-      inflight.current.add(key);
-      api
-        .compareRoutes({ lat: from.lat, lon: from.lon }, { lat: to.lat, lon: to.lon }, Boolean(planner.prefer_cctv), planner.mobility)
-        .then((plan) => setPlans((all) => ({ ...all, [key]: plan })))
-        .catch((e) => setPlanErrors((all) => ({ ...all, [key]: e.message })))
-        .finally(() => inflight.current.delete(key));
-    });
-  }); // 렌더마다 확인하지만 이미 계산했거나 계산 중인 구간은 건너뜀
-
-  const notFound = (planner?.places || []).some((p) => p.source === "kakao" && coords[p.ref] === null);
 
   if (!planner) {
     return (
@@ -811,11 +925,21 @@ function Editor({ plannerId, onBack, onTravel, onView, apiRef }) {
         }
       />
       <div className="editor-map">
-        <KakaoMap points={mapPoints} lines={routeLines} crime={Boolean(crime)} onView={onView} />
+        <KakaoMap points={mapPoints} lines={routeLines} crime={Boolean(crime)} />
         <CrimeToggle value={crime} onChange={setCrime} />
       </div>
       <section className="itinerary">
         <div className="sheet-handle" />
+        {/* 일정 목록 안에 둔다: 넓은 화면 플래너는 칸 나누기라 따로 두면 한 칸을 통째로 차지한다 */}
+        {bubble !== null && bubble < planner.places.length - 1 &&
+          (plans[segKey(bubble)] || planErrors[segKey(bubble)]) && (
+            <DistanceBubble
+              plan={plans[segKey(bubble)]}
+              error={planErrors[segKey(bubble)]}
+              kind={planner.route_choices[bubble] || DEFAULT_ROUTE}
+              onClose={() => setBubble(null)}
+            />
+          )}
         <label className="title-field">
           <span className="eyebrow">{formatDates(planner.start_date, planner.end_date)}</span>
           <input
@@ -918,6 +1042,9 @@ function Editor({ plannerId, onBack, onTravel, onView, apiRef }) {
             <Icon name="walk" /> 여행 시작
           </button>
         </div>
+        <button className="text-button" onClick={remove} disabled={saving}>
+          이 여행 지우기
+        </button>
       </section>
       {sheet === "search" && (
         <SearchSheet
@@ -1144,7 +1271,7 @@ function RoutesSheet({ index, heading, from, to, plan, error, onRetry, active, o
   );
 }
 
-function Travel({ planner, stop, setStop, onBack, onChat, onView }) {
+function Travel({ planner, stop, setStop, onBack, onChat }) {
   const places = planner.places;
   const next = places[Math.min(stop + 1, places.length - 1)];
   const finished = stop >= places.length - 1;
@@ -1173,7 +1300,7 @@ function Travel({ planner, stop, setStop, onBack, onChat, onView }) {
   return (
     <main className="travel-screen">
       <div className="travel-map">
-        <KakaoMap points={points} lines={line && !finished ? [line] : []} onView={onView} />
+        <KakaoMap points={points} lines={line && !finished ? [line] : []} />
       </div>
       <div className="travel-topbar">
         <button className="map-round-button" onClick={onBack} aria-label="여행 나가기">
@@ -1259,6 +1386,14 @@ function saveConversation(key, id) {
   }
 }
 
+function clearConversation(key) {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // 저장이 막혀 있으면 지울 것도 없다
+  }
+}
+
 const newId = () =>
   globalThis.crypto?.randomUUID?.() || `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
 
@@ -1279,9 +1414,18 @@ async function waitForRun(runId, location, view) {
 }
 
 // 서버가 준 사용자 문장만 보여준다(상태 코드·ID는 화면 분기에만 씀)
-function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
+// save: 이 답의 일정 초안 저장 상태 {can, savedId}. routeKind/onChooseRoute: 지도에 보일 길 고르기
+function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, save, onSave, routeKind, onChooseRoute, busy }) {
   const it = reply.itinerary;
   const notes = [...(it?.notes || []), ...(reply.warnings || []), ...(reply.missing_data || [])];
+  const cards = (reply.places || []).filter((p) => !p.pin_only); // pin_only: 지도에만 찍는 점
+  const [taxi, setTaxi] = useState(null);
+  const taxiButton = (p) =>
+    p.address ? (
+      <button className="text-button taxi-button" onClick={() => setTaxi({ name: p.name, address: p.address })}>
+        기사님께 보여주기
+      </button>
+    ) : null;
   return (
     <>
       {reply.questions?.map((q, i) => (
@@ -1299,9 +1443,9 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
           )}
         </div>
       ))}
-      {reply.places?.length > 0 && !it && (
+      {cards.length > 0 && !it && (
         <div className="facility-list">
-          {reply.places.map((p, i) => (
+          {cards.map((p, i) => (
             <div className="facility-card" key={`${p.name}-${i}`}>
               <b>
                 {reply.routes ? p.detail : `${i + 1}.`} {p.name}
@@ -1312,6 +1456,7 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
                   카카오맵에서 보기
                 </a>
               )}
+              {taxiButton(p)}
             </div>
           ))}
         </div>
@@ -1334,6 +1479,7 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
                   카카오맵에서 보기
                 </a>
               )}
+              {taxiButton(s)}
             </div>
           ))}
           {it.back_label && (
@@ -1342,11 +1488,24 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
               {it.back_minutes != null ? ` 약 ${it.back_minutes}분` : ""} · 모두 약 {it.total_minutes}분
             </p>
           )}
-          {onOpenPlanner && reply.trip_id && reply.status === "ok" && (
-            <button className="primary-button" onClick={() => onOpenPlanner(reply.trip_id)}>
+          {save?.savedId ? (
+            <button className="secondary-button" onClick={() => onOpenPlanner(save.savedId)}>
               내 여행에서 열기
             </button>
-          )}
+          ) : save?.can && reply.unsaved?.replaces ? (
+            <div className="save-actions">
+              <button className="primary-button" onClick={() => onSave(reply.trip_id, true)} disabled={busy}>
+                원래 여행에 덮어쓰기
+              </button>
+              <button className="secondary-button" onClick={() => onSave(reply.trip_id, false)} disabled={busy}>
+                새 여행으로 저장
+              </button>
+            </div>
+          ) : save?.can ? (
+            <button className="primary-button" onClick={() => onSave(reply.trip_id, false)} disabled={busy}>
+              내 여행에 저장
+            </button>
+          ) : null}
         </div>
       )}
       {reply.routes && (
@@ -1354,10 +1513,15 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
           {reply.routes.routes
             .filter((r) => r.found)
             .map((r) => (
-              <div className="facility-card" key={r.kind}>
+              <button
+                className={`facility-card ${r.kind === routeKind ? "chosen" : ""}`}
+                key={r.kind}
+                onClick={() => onChooseRoute?.(r.kind)}
+                aria-pressed={r.kind === routeKind}
+              >
                 <b>{r.title}</b>
                 <small>{r.text.join(" ")}</small>
-              </div>
+              </button>
             ))}
           {reply.routes.comparison.map((line) => (
             <p className="result-count" key={line}>
@@ -1366,6 +1530,7 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
           ))}
         </div>
       )}
+      {taxi && <TaxiCard place={taxi} onClose={() => setTaxi(null)} />}
       {notes.length > 0 && (
         <div className="facility-list">
           {notes.map((n) => (
@@ -1379,23 +1544,74 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, busy }) {
   );
 }
 
+// AI 길잡이 얼굴: 설문대할망(기획서 캐릭터, Google Gemini로 만든 그림)
+function HalmangFace() {
+  return <img className="agent-avatar halmang-face" src="/halmang/face.webp" alt="설문대할망" />;
+}
+
+// 기사님께 보여주기: 장소 이름과 주소를 화면 가득 큰 글씨로(외국인·말로 설명하기 어려운 사람용)
+function TaxiCard({ place, onClose }) {
+  const close = useRef(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose; // 부모가 렌더마다 새 함수를 줘도 열릴 때 한 번만 설정
+  // 열면 닫기 버튼에 초점, Esc로 닫기, 닫으면 연 버튼으로 초점을 돌려준다. 버튼이 하나라 Tab은 그 자리에 둔다
+  useEffect(() => {
+    const opener = document.activeElement;
+    close.current?.focus();
+    const onKey = (e) => {
+      if (e.key === "Escape") onCloseRef.current();
+      if (e.key === "Tab") {
+        e.preventDefault();
+        close.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      opener?.focus?.();
+    };
+  }, []);
+  return (
+    <div className="taxi-card" role="dialog" aria-modal="true" aria-label="기사님께 보여주기">
+      <p className="taxi-lead">이곳으로 가 주세요</p>
+      <strong>{place.name}</strong>
+      <span>{place.address}</span>
+      <button ref={close} className="primary-button" onClick={onClose}>
+        닫기
+      </button>
+    </div>
+  );
+}
+
 // 제주 안에서만 보낸다(서버도 확인). 지도가 아직 안 떴으면 null
 const inJejuView = (v) =>
   v && v.center.lat >= 33 && v.center.lat <= 34.05 && v.center.lon >= 125.9 && v.center.lon <= 127 ? v : null;
 
 // AI와 대화하는 칸. 지금 보이는 지도(view)를 함께 보내 AI가 같은 지도를 보고 답한다.
 // tripId: 지금 열어 둔 여행(플래너에서 같이 짤 때). onReply: 답마다 부름(지도 갱신용)
-// context: 지금 보고 있는 화면 {name, tripId?, travelStop?}. beforeSend: 보내기 전 할 일(플래너 저장)
-function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlanner }) {
+// context: 지금 다루는 여행 {name, tripId?}. onSaved: 초안을 내 여행에 넣었을 때(저장된 번호)
+// memory: 화면을 오가도 남는 대화(답에 딸린 일정·저장 상태까지). shown/onShow: 지도에 보일 답과 고른 길
+function AgentPanel({ context, view, storageKey, onReply, onOpenPlanner, onSaved, memory, shown, onShow }) {
   const [conversation, setConversation] = useState(() => readConversation(storageKey));
-  const [log, setLog] = useState([]);
+  const [log, setLog] = useState(() => memory.current.log);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [here, setHere] = useState(null); // 사용자가 "지금 위치 쓰기"를 눌렀을 때만
   const [rulesOnly, setRulesOnly] = useState(false);
+  // 답 순번 -> 저장된 여행 번호(초안 번호는 쓰지 않음: 서버가 같은 번호를 다시 줄 수 있음)
+  const [saved, setSaved] = useState(() => memory.current.saved);
+  useEffect(() => {
+    memory.current = { ...memory.current, log, saved };
+  }, [log, saved, memory]);
   const running = useRef(null);
   const bottom = useRef(null);
+  const box = useRef(null);
+  // 칸을 넘으면 줄바꿈되고 입력창이 늘어남(최대 높이는 CSS), 보내서 비면 한 줄로 돌아옴
+  useEffect(() => {
+    box.current.style.height = "auto";
+    box.current.style.height = `${box.current.scrollHeight}px`;
+  }, [text]);
 
   useEffect(() => {
     if (!conversation) return;
@@ -1405,16 +1621,15 @@ function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlan
       .catch(() => setConversation(null)); // 지난 대화가 없거나 만료됨: 새로 시작
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => bottom.current?.scrollIntoView({ block: "end" }), [log, busy]);
+  // 중괄호 필수: 최신 크롬은 scrollIntoView가 값을 돌려줘 React가 정리 함수로 착각하고 화면이 통째로 꺼진다
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: "end" });
+  }, [log, busy]);
 
   const send = async (said, location = here) => {
     const message = said.trim();
     if (!message || busy) return;
-    setBusy(true); // 저장을 기다리는 동안에도 다시 보내지 못하게
-    if (beforeSend && !(await beforeSend())) {
-      setBusy(false); // 플래너에 저장하지 않은 수정이 있는데 저장에 실패하면 보내지 않음
-      return;
-    }
+    setBusy(true);
     const id = newId();
     running.current = id;
     setError("");
@@ -1429,8 +1644,9 @@ function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlan
       conversation_id: conv,
       text: message,
       location,
-      // 지금 화면에 열린 여행. 없으면 서버가 이 대화에 연결해 둔 여행(방금 만든 여행)을 쓴다
+      // 지금 다루는 여행(내 여행에서 가져왔거나 방금 만든 초안). 없으면 서버가 이 대화에 연결해 둔 여행
       trip_id: context?.tripId ?? null,
+      detach_trip: !context?.tripId, // "그만 보기"를 눌렀으면 서버도 앞서 다룬 여행을 쓰지 않는다
       map_view: inJejuView(view),
       screen: context ? { name: context.name, travel_stop: context.travelStop ?? null } : null,
     };
@@ -1444,6 +1660,9 @@ function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlan
       }
       if (reply.still_running) reply = await waitForRun(id, location, inJejuView(view));
       setRulesOnly(reply.interpreter === "rules");
+      // "저장해줘"로 저장했으면 저장한 그 초안의 가장 최근 일정 답의 저장 버튼을 '저장됨'으로
+      const planIndex = log.findLastIndex((m) => m.reply?.itinerary && m.reply.trip_id === reply.saved_draft);
+      if (reply.saved_trip && planIndex >= 0) setSaved((m) => ({ ...m, [planIndex]: reply.saved_trip }));
       setLog((l) => [...l, { role: "agent", text: reply.message, reply }]);
       onReply?.(reply);
     } catch (e) {
@@ -1464,21 +1683,42 @@ function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlan
     }
   };
 
+  const saveDraft = async (index, draftId, overwrite) => {
+    setBusy(true);
+    setError("");
+    try {
+      const { id } = await api.saveDraft(draftId, overwrite);
+      setSaved((m) => ({ ...m, [index]: id }));
+      setLog((l) => [...l, { role: "agent", text: overwrite ? "원래 여행에 덮어써서 저장해 뒀단다." : "내 여행에 잘 저장해 뒀단다." }]);
+      onSaved?.(id);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  // 저장 버튼은 여행(초안)마다 가장 최근 일정 답에만(같은 초안의 앞선 답은 이미 고쳐졌을 수 있음).
+  // 여러 날 일정은 날마다 초안이 달라 날마다 저장할 수 있다
+  const lastPlanOf = {};
+  log.forEach((m, i) => {
+    if (m.reply?.itinerary && m.reply.status === "ok" && m.reply.trip_id) lastPlanOf[m.reply.trip_id] = i;
+  });
+
   const cancel = () => running.current && api.agentCancel(running.current).catch(() => {});
 
   return (
     <div className="agent-panel">
       <section className="messages">
         <div className="agent-row">
-          <span className="agent-avatar">
-            <Icon name="spark" size={18} />
-          </span>
+          <HalmangFace />
           <div className="message agent-message">
-            무엇을 도와드릴까요? 일정을 부탁하면 플래너로, 길을 물으면 경로 안내로 바로 옮겨 드려요. 지도에 보이는
-            곳이나 말씀하신 곳을 기준으로 찾아요.
+            <img className="halmang-pose" src="/halmang/welcome.webp" alt="" />
+            어서 오너라! 내가 치마폭에 흙을 날라 빚어낸 보물섬, 제주에 온 걸 환영해. 오늘은 어디부터 걸어볼까?
+            일정을 짜 주면 마음에 들 때 내 여행에 저장할 수 있고, 길을 물으면 지도에 그려 주마. 지도에 보이는
+            곳이나 말한 곳을 기준으로 찾아 준단다.
           </div>
         </div>
-        {rulesOnly && <p className="result-count">지금은 정해진 표현 위주로 알아들어요. 짧고 분명하게 말씀해 주세요.</p>}
+        {rulesOnly && <p className="result-count">지금은 정해진 말 위주로 알아듣는단다. 짧고 분명하게 말해 주렴.</p>}
         {log.map((m, i) =>
           m.role === "user" ? (
             <div className="agent-row" key={i}>
@@ -1487,9 +1727,7 @@ function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlan
           ) : (
             <div key={i}>
               <div className="agent-row">
-                <span className="agent-avatar">
-                  <Icon name="spark" size={18} />
-                </span>
+                <HalmangFace />
                 <div className="message agent-message">{m.text}</div>
               </div>
               {m.reply && (
@@ -1498,6 +1736,17 @@ function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlan
                   onSend={(t) => send(t)}
                   onUseLocation={useLocation}
                   onOpenPlanner={onOpenPlanner}
+                  save={
+                    m.reply.trip_id
+                      ? {
+                          can: i === lastPlanOf[m.reply.trip_id] && m.reply.unsaved != null && !saved[i],
+                          savedId: saved[i] || (m.reply.unsaved == null ? m.reply.trip_id : null),
+                        }
+                      : null
+                  }
+                  onSave={(draftId, overwrite) => saveDraft(i, draftId, overwrite)}
+                  routeKind={shown?.reply === m.reply ? shown.kind : null}
+                  onChooseRoute={(kind) => onShow({ reply: m.reply, kind })}
                   busy={busy}
                 />
               )}
@@ -1505,12 +1754,15 @@ function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlan
           ),
         )}
         {busy && (
-          <p className="result-count">
-            찾고 계산하는 중이에요…{" "}
-            <button className="text-button" onClick={cancel}>
-              그만하기
-            </button>
-          </p>
+          <div className="agent-row halmang-busy">
+            <img className="halmang-pose" src="/halmang/search.webp" alt="" />
+            <p className="result-count">
+              돋보기로 살펴보는 중이란다…{" "}
+              <button className="text-button" onClick={cancel}>
+                그만하기
+              </button>
+            </p>
+          </div>
         )}
         <FormError message={error} />
         <div ref={bottom} />
@@ -1532,9 +1784,18 @@ function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlan
           </div>
         )}
         <div className="input-row">
-          <input
+          <textarea
+            ref={box}
+            rows={1}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter는 보내기, Shift+Enter는 줄바꿈. 한글 조합 중 Enter는 글자 확정이라 보내지 않음
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                e.currentTarget.form.requestSubmit();
+              }
+            }}
             placeholder="예: 애월에서 빵집 두 곳 들르는 코스 짜줘"
             aria-label="AI 길잡이에게 할 말"
             maxLength={500}
@@ -1548,79 +1809,203 @@ function AgentPanel({ context, view, storageKey, beforeSend, onReply, onOpenPlan
   );
 }
 
-// 어디서든 여는 AI 대화창. 뒤 화면(context)과 그 화면의 지도(backgroundView)를 AI가 함께 본다.
-// 답의 screen(AI가 해석한 요청 종류)에 따라 일정이면 뒤 화면을 그 플래너로, 길찾기면 경로 비교를 연다
-function AgentDrawer({ onClose, context, backgroundView, beforeSend, onOpenPlanner }) {
-  const [ownView, setOwnView] = useState(null);
-  const [latest, setLatest] = useState(null);
-  const [routeKind, setRouteKind] = useState(null);
-  const [routeOpen, setRouteOpen] = useState(false);
+// 로그인 뒤 첫 화면: AI와 대화하며 일정을 짜고 길을 묻는다. 일정은 초안이고 저장해야 내 여행에 들어간다.
+// tripId: 지금 다루는 여행(내 여행에서 "AI 길잡이에서 보기"로 왔거나 방금 만든 초안)
+function AgentScreen({ tripId, setTripId, onOpenPlanner, onTrips, memory }) {
+  const [view, setView] = useState(null);
+  const [crime, setCrime] = useState(null); // 범죄주의구간 표시: null = 아직 안 물어봄
+  // 지도에 보일 답과 그 답에서 고른 길. 화면을 오가도 남게 memory에도 둔다
+  const [shown, setShownState] = useState(() => memory.current.shown || null);
+  const setShown = (next) => {
+    memory.current = { ...memory.current, shown: next };
+    setShownState(next);
+  };
+  const latest = shown?.reply;
+  const routeKind = shown?.kind;
+  const [session, setSession] = useState(0); // 새 대화·지난 대화를 열 때 대화 칸을 새로 그린다
+  const sessionNow = useRef(0); // 이전 대화 칸에서 늦게 온 답을 버리려고 지금 대화 순번을 둔다
+  // 이 화면을 떠나면(내 여행으로 가서 다른 여행을 새 대화로 여는 등) 늦게 온 답은 모두 버린다
+  useEffect(
+    () => () => {
+      sessionNow.current = -1;
+    },
+    [],
+  );
+  const [past, setPast] = useState(null); // 지난 대화 목록(열었을 때만)
+  const [error, setError] = useState("");
 
   const onReply = (reply) => {
-    setLatest(reply);
-    if (reply.screen === "planner" && reply.trip_id) onOpenPlanner(reply.trip_id);
-    else if (reply.screen === "route") {
-      setRouteKind(reply.routes.routes.find((r) => r.found)?.kind || null);
-      setRouteOpen(true);
-    }
+    if (reply.trip_id) setTripId(reply.trip_id);
+    // 사용자가 고른 경로 유형(chosen_route)을 먼저 그린다
+    setShown({ reply, kind: reply.chosen_route || reply.routes?.routes.find((r) => r.found)?.kind || null });
   };
 
-  const points = (latest?.places || [])
-    .filter((p) => p.lat != null)
-    .map((p, i) => ({ key: `ai${i}`, number: i + 1, name: p.name, lat: p.lat, lon: p.lon }));
+  // 함께 보는 여행: 저장된 장소를 다시 찾아 고른 경로까지 그린다(답이 올 때마다 바뀐 일정을 다시 읽음)
+  const [trip, setTrip] = useState(null);
+  useEffect(() => {
+    if (!tripId) return setTrip(null);
+    let alive = true; // 그사이 여행을 끊거나 바꾸면 늦게 온 응답은 버린다
+    api
+      .getPlanner(tripId)
+      .then((t) => alive && setTrip(t))
+      .catch(() => alive && setTrip(null)); // 지워진 여행: 답의 지도만 보인다
+    return () => {
+      alive = false;
+    };
+  }, [tripId, latest]);
+  const tripMap = useTripMap(trip, tripId);
+
+  // 길찾기·장소 찾기 답은 그 답을, 일정 답이거나 아직 답이 없으면 함께 보는 여행을 그린다
+  // (여행을 함께 보는 중에도 답에 여행 번호가 붙으므로 일정이 있는 답인지로 가른다)
+  const replyOwnMap = latest && !latest.itinerary && (latest.routes || latest.places?.length);
+  const showTrip = tripId && trip && !replyOwnMap;
+  const points = showTrip
+    ? tripMap.mapPoints
+    : (latest?.places || [])
+        .filter((p) => p.lat != null)
+        .map((p, i) => ({ key: `ai${i}`, number: i + 1, name: p.name, lat: p.lat, lon: p.lon }));
   const chosen = latest?.routes?.routes.find((r) => r.kind === routeKind && r.found);
-  const lines = chosen ? [{ key: "ai-route", kind: chosen.kind, path: chosen.line }] : [];
-  // 뒤 화면에 지도가 없으면(여행 목록) 대화창 지도를 보여 주고 그 지도를 AI가 본다
-  const showMap = points.length > 0 || lines.length > 0 || !backgroundView;
+  const lines = showTrip ? tripMap.routeLines : chosen ? [{ key: "ai-route", kind: chosen.kind, path: chosen.line }] : [];
+
+  // 대화를 바꾼다: id가 없으면 새 대화, 있으면 그 지난 대화를 불러온다
+  const switchTo = (id) => {
+    if (id) saveConversation(CONV_KEY, id);
+    else clearConversation(CONV_KEY);
+    memory.current = { log: [], saved: {}, shown: null };
+    setShownState(null);
+    setTripId(null);
+    setPast(null);
+    setError("");
+    sessionNow.current += 1;
+    setSession(sessionNow.current);
+    if (id)
+      api
+        .agentConversation(id)
+        .then((c) => c.trip_id && setTripId(c.trip_id))
+        .catch(() => {}); // 대화 칸이 따로 알려 준다
+  };
+  const openPast = () =>
+    api
+      .agentConversations()
+      .then((r) => setPast(r.conversations))
+      .catch((e) => setError(e.message));
+  const remove = async (id) => {
+    if (!window.confirm("이 대화 기록을 지울까요? 지우면 되돌릴 수 없어요.")) return;
+    try {
+      await api.deleteConversation(id);
+    } catch (e) {
+      if (e.status !== 404) return setError(e.message); // 이미 없는 대화면 지운 것과 같다
+    }
+    if (id === readConversation(CONV_KEY)) switchTo(null);
+    setPast((list) => list && list.filter((c) => c.id !== id));
+  };
+  const rename = async (c, title) => {
+    try {
+      const r = await api.renameConversation(c.id, title);
+      // 지우면 기본 제목은 서버 목록에서 다시 받아 온다
+      if (r.custom) setPast((list) => list.map((x) => (x.id === c.id ? { ...x, ...r } : x)));
+      else openPast();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  const askTitle = (c) => {
+    const title = window.prompt("대화 제목을 적어 주세요. (40자까지)", c.title);
+    if (title !== null && title.trim()) rename(c, title.trim());
+  };
+  const current = readConversation(CONV_KEY);
 
   return (
-    <aside className="ai-drawer" aria-label="AI 길잡이">
-      <div className="ai-drawer-head">
+    <main className="agent-screen" aria-label="AI 길잡이">
+      <div className="agent-head">
         <b>
           <Icon name="spark" size={18} /> AI 길잡이
         </b>
-        <button className="icon-button" onClick={onClose} aria-label="AI 길잡이 닫기">
-          <Icon name="close" size={20} />
-        </button>
+        <span className="agent-actions">
+          <button className="text-button" onClick={() => switchTo(null)}>
+            새 대화
+          </button>
+          <button className="text-button" onClick={() => (past ? setPast(null) : openPast())} aria-expanded={Boolean(past)}>
+            지난 대화
+          </button>
+          {current && (
+            <button className="text-button" onClick={() => remove(current)}>
+              기록 삭제
+            </button>
+          )}
+          <button className="text-button agent-trips-link" onClick={onTrips}>
+            내 여행
+          </button>
+        </span>
       </div>
-      {showMap && (
-        <div className="nearby-map">
-          <KakaoMap points={points} lines={lines} onView={setOwnView} />
+      <div className="agent-extras">
+      <FormError message={error} />
+      {past && (
+        <div className="agent-past" role="list" aria-label="지난 대화">
+          {past.length === 0 && <p className="empty-note">지난 대화가 없어요. 대화 기록은 7일 동안 남아요.</p>}
+          {past.map((c) => (
+            <div className={`agent-past-item ${c.id === current ? "current" : ""}`} role="listitem" key={c.id}>
+              <button className="agent-past-open" onClick={() => switchTo(c.id)}>
+                <b>{c.title}</b>
+                <small>{new Date(c.updated_at).toLocaleString("ko-KR", { month: "long", day: "numeric", hour: "numeric", minute: "2-digit" })}</small>
+              </button>
+              <button className="text-button" onClick={() => askTitle(c)} aria-label={`${c.title} 제목 바꾸기`}>
+                제목 바꾸기
+              </button>
+              {c.custom && (
+                <button className="text-button" onClick={() => rename(c, null)} aria-label={`${c.title} 제목 지우기`}>
+                  제목 지우기
+                </button>
+              )}
+              <button className="text-button" onClick={() => remove(c.id)} aria-label={`${c.title} 대화 지우기`}>
+                지우기
+              </button>
+            </div>
+          ))}
         </div>
       )}
-      <AgentPanel
-        context={context}
-        view={backgroundView || ownView}
-        storageKey={CONV_KEY}
-        beforeSend={beforeSend}
-        onReply={onReply}
-        onOpenPlanner={onOpenPlanner}
-      />
-      {routeOpen && latest?.routes && (
-        <RoutesSheet
-          heading={`${latest.places[0]?.name}에서 ${latest.places[1]?.name}까지 세 가지 길을 비교해요.`}
-          from={latest.places[0]}
-          to={latest.places[1]}
-          plan={latest.routes}
-          active={routeKind}
-          onChoose={setRouteKind}
-          onClose={() => setRouteOpen(false)}
-        />
+      {tripId && (
+        <div className="agent-trip">
+          <Icon name="calendar" size={15} /> {trip ? `'${trip.title}' 여행을 함께 보고 있어요` : "고르신 여행을 함께 보고 있어요"}
+          <button className="text-button" onClick={() => setTripId(null)}>
+            그만 보기
+          </button>
+        </div>
       )}
-    </aside>
+      {showTrip && (tripMap.notFound || tripMap.lookupFailed) && (
+        <p className="map-note">일부 장소의 위치를 지금 찾지 못해 지도에 빠졌어요.</p>
+      )}
+      </div>
+      <div className="nearby-map">
+        <KakaoMap points={points} lines={lines} crime={Boolean(crime)} onView={setView} />
+        <CrimeToggle value={crime} onChange={setCrime} />
+      </div>
+      <AgentPanel
+        key={session}
+        context={{ name: "chat", tripId }}
+        view={view}
+        storageKey={CONV_KEY}
+        onReply={(reply) => sessionNow.current === session && onReply(reply)}
+        onOpenPlanner={onOpenPlanner}
+        onSaved={(id) => sessionNow.current === session && setTripId(id)}
+        memory={memory}
+        shown={shown}
+        onShow={setShown}
+      />
+    </main>
   );
 }
 
-function DesktopNav({ screen, username, hasTrip, onNavigate, onLogout, onAi }) {
+function DesktopNav({ screen, username, hasTrip, onNavigate, onLogout }) {
   const items = [
+    { label: "AI 길잡이", icon: "spark", screens: ["chat"], target: "chat" },
     { label: "내 여행", icon: "calendar", screens: ["planners", "editor"], target: "planners" },
     { label: "여행 안내", icon: "walk", screens: ["travel"], target: "travel", needsTrip: true },
-    { label: "AI 길잡이", icon: "spark", screens: [], target: "ai" },
   ];
 
   return (
     <aside className="desktop-nav" aria-label="주요 메뉴">
-      <button className="desktop-brand" onClick={() => onNavigate("planners")}>
+      <button className="desktop-brand" onClick={() => onNavigate("chat")}>
         <span>
           <Icon name="island" size={27} />
         </span>
@@ -1631,7 +2016,7 @@ function DesktopNav({ screen, username, hasTrip, onNavigate, onLogout, onAi }) {
           <button
             key={item.label}
             className={item.screens.includes(screen) ? "active" : ""}
-            onClick={() => (item.target === "ai" ? onAi() : onNavigate(item.target))}
+            onClick={() => onNavigate(item.target)}
             disabled={item.needsTrip && !hasTrip}
             title={item.needsTrip && !hasTrip ? "여행을 시작하면 쓸 수 있어요" : undefined}
           >
@@ -1666,9 +2051,9 @@ export default function App() {
   const [screen, setScreen] = useState(() => (readWelcomeSeen() ? "auth" : "welcome"));
   const [username, setUsername] = useState("");
   const [plannerId, setPlannerId] = useState(null);
-  const [aiOpen, setAiOpen] = useState(false);
-  const [mapView, setMapView] = useState(null); // 뒤 화면 지도에 지금 보이는 범위
-  const [editorTick, setEditorTick] = useState(0); // AI가 여행을 고치면 플래너를 새로 불러온다
+  const [chatTrip, setChatTrip] = useState(null); // AI 대화에서 지금 다루는 여행
+  const chatMemory = useRef({ log: [], saved: {}, shown: null }); // 다른 화면에 갔다 와도 대화 유지
+  const [editorTick, setEditorTick] = useState(0); // AI 초안을 저장한 뒤 플래너를 새로 불러온다
   const editorApi = useRef(null);
   // 여행 진행 상태는 화면 밖에 둬서 메뉴로 오가도 유지한다
   const [trip, setTrip] = useState(null);
@@ -1676,30 +2061,20 @@ export default function App() {
 
   useEffect(() => {
     window.scrollTo(0, 0);
-    setMapView(null); // 화면이 바뀌면 그 화면 지도가 새로 알려 준다
   }, [screen]);
 
   const loggedIn = screen !== "welcome" && screen !== "auth";
-  // AI가 보는 지금 화면
-  const context =
-    screen === "editor"
-      ? { name: "editor", tripId: plannerId }
-      : screen === "travel" && trip
-        ? { name: "travel", tripId: trip.id, travelStop: stop }
-        : screen === "planners"
-          ? { name: "planners" }
-          : null;
-  const openPlannerFromAi = (id) => {
-    const dirty = screen === "editor" && editorApi.current?.isDirty();
-    const ask = id === plannerId
-      ? "AI가 일정을 고쳤어요. 직접 고친 내용을 버리고 새로 불러올까요?"
-      : "저장하지 않은 수정이 있어요. 저장하지 않고 다른 여행을 열까요?";
-    if (dirty && !window.confirm(ask)) return;
+  const openPlanner = (id) => {
     setPlannerId(id);
     setEditorTick((t) => t + 1);
     setScreen("editor");
   };
-  const beforeAiSend = async () => (screen === "editor" && editorApi.current ? editorApi.current.save() : true);
+  // AI 대화로 간다. tripId를 주면 그 여행을 AI와 함께 고친다(플래너에서 손으로 고친 건 먼저 저장)
+  const goChat = async (tripId = null) => {
+    if (screen === "editor" && editorApi.current && !(await editorApi.current.save())) return;
+    if (tripId) setChatTrip(tripId);
+    setScreen("chat");
+  };
 
   useEffect(() => {
     // 이미 로그인돼 있으면 로그인 화면을 건너뛴다
@@ -1707,7 +2082,7 @@ export default function App() {
       .me()
       .then((me) => {
         setUsername(me.username);
-        setScreen((s) => (s === "auth" ? "planners" : s));
+        setScreen((s) => (s === "auth" ? "chat" : s));
       })
       .catch(() => {});
   }, []);
@@ -1722,6 +2097,8 @@ export default function App() {
     setUsername("");
     setPlannerId(null);
     setTrip(null);
+    setChatTrip(null);
+    chatMemory.current = { log: [], saved: {}, shown: null }; // 다음 사람에게 앞 대화가 보이지 않게
     setScreen("auth");
   };
 
@@ -1732,9 +2109,10 @@ export default function App() {
           screen={screen}
           username={username}
           hasTrip={Boolean(trip)}
-          onNavigate={setScreen}
+          onNavigate={(target) =>
+            target === "chat" ? goChat(screen === "editor" ? plannerId : null) : setScreen(target)
+          }
           onLogout={logout}
-          onAi={() => setAiOpen(true)}
         />
       )}
       <div className="phone-frame">
@@ -1746,7 +2124,7 @@ export default function App() {
               } catch {
                 // 저장이 막혀 있으면 다음에 시작 안내가 다시 보일 뿐이다
               }
-              setScreen(username ? "planners" : "auth");
+              setScreen(username ? "chat" : "auth");
             }}
           />
         )}
@@ -1754,7 +2132,7 @@ export default function App() {
           <Auth
             onLogin={(name) => {
               setUsername(name);
-              setScreen("planners");
+              setScreen("chat");
             }}
           />
         )}
@@ -1764,17 +2142,39 @@ export default function App() {
               setPlannerId(id);
               setScreen("editor");
             }}
+            onChat={(id, fresh) => {
+              if (fresh) {
+                // 지금 대화는 서버에 남아 "지난 대화"에서 다시 열 수 있다
+                clearConversation(CONV_KEY);
+                chatMemory.current = { log: [], saved: {}, shown: null };
+              } else {
+                // 앞 답의 지도 대신 고른 여행의 경로가 보이게 한다
+                chatMemory.current = { ...chatMemory.current, shown: null };
+              }
+              goChat(id);
+            }}
             onLogout={logout}
             onAccountDeleted={signedOut}
-            onChat={() => setAiOpen(true)}
+          />
+        )}
+        {screen === "chat" && (
+          <AgentScreen
+            tripId={chatTrip}
+            setTripId={setChatTrip}
+            onOpenPlanner={openPlanner}
+            onTrips={() => setScreen("planners")}
+            memory={chatMemory}
           />
         )}
         {screen === "editor" && plannerId && (
           <Editor
             key={`${plannerId}-${editorTick}`}
             plannerId={plannerId}
-            onView={setMapView}
             apiRef={editorApi}
+            onDeleted={(id) => {
+              if (chatTrip === id) setChatTrip(null); // AI 대화가 지운 여행을 붙잡지 않게
+              setScreen("planners");
+            }}
             onBack={() => setScreen("planners")}
             onTravel={(planner, map) => {
               setTrip({ ...planner, map });
@@ -1789,25 +2189,19 @@ export default function App() {
             stop={stop}
             setStop={setStop}
             onBack={() => setScreen("editor")}
-            onChat={() => setAiOpen(true)}
-            onView={setMapView}
+            onChat={() => goChat(trip.id)}
           />
         )}
 
       </div>
-      {loggedIn && !aiOpen && (
-        <button className="ai-fab" onClick={() => setAiOpen(true)} aria-label="AI 길잡이 열기">
+      {loggedIn && screen !== "chat" && (
+        <button
+          className="ai-fab"
+          onClick={() => goChat(screen === "editor" ? plannerId : null)}
+          aria-label={screen === "editor" ? "이 여행을 AI와 고치기" : "AI 길잡이로 가기"}
+        >
           <Icon name="spark" size={26} />
         </button>
-      )}
-      {loggedIn && aiOpen && (
-        <AgentDrawer
-          onClose={() => setAiOpen(false)}
-          context={context}
-          backgroundView={mapView}
-          beforeSend={beforeAiSend}
-          onOpenPlanner={openPlannerFromAi}
-        />
       )}
     </div>
   );

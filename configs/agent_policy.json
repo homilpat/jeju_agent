@@ -8,7 +8,7 @@
   "max_same_failure": 2,
   "max_retries": 2,
   "retry_backoff_s": 0.5,
-  "tool_timeout_s": {"default": 10, "compare_routes": 30, "get_travel_matrix": 30},
+  "tool_timeout_s": {"default": 10, "compare_routes": 30, "get_travel_matrix": 30, "find_route_stops": 30, "analyze_area_access": 30},
   "max_candidates": 15,
   "search_radius_m": 2000,
   "widened_radius_m": 5000,

@@ -2,25 +2,41 @@
 
 from __future__ import annotations
 
+import math
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+import shapely
+
 from jeju_lifepath.agent.models import Policy, ToolError
+from jeju_lifepath.agent.parse import THEME_CATEGORY, is_kind
 from jeju_lifepath.agent.tools import (
+    AreaAccessIn,
     CompareRoutesIn,
     MatrixIn,
     NearbyIn,
     ResolveLocationIn,
+    RouteStopsIn,
     SearchPlacesIn,
     ToolSpec,
 )
 from jeju_lifepath.geo.geodesy import haversine_m
+from jeju_lifepath.routing.walk import MAX_SNAP_M
 
+M_PER_DEG_LAT = 111_320  # 위도 1도의 길이(m, 구면 근사)
 PHARMACY_CODE = "PM9"  # 카카오 분류 코드: 약국
 NEARBY_LIMIT = 5  # api/app.py NEARBY_LIMIT과 같음
 TOILET_GEOCODE_MAX = 15  # shortcut: 근거 없는 상한(주소 검색 호출 수 제한), 느리면 조정
+# 길에 들를 곳 카드 최대 6장(REQUIREMENTS §11.5 근거, §11.1-2)
+CARD_MAX = 6
+# 화장실 주소 -> 위치 바꾸기를 동시에 몇 개 부를지(도구 실행기 ToolRunner 스레드 수 8과 같게, 잠정)
+GEOCODE_WORKERS = 8
+# 좌표가 있는 공공데이터가 없는 시설은 카카오 장소 검색으로 찾는다(검색어·분류 코드)
+KAKAO_FACILITY = {"pharmacy": {"code": PHARMACY_CODE}, "toilet": {"query": "공중화장실"}}
 PUBLIC_SOURCES = {
     "wifi": "공공 와이파이 위치(제주데이터허브)",
     "police": "경찰관서 위치(생활안전지도)",
@@ -34,6 +50,9 @@ class AgentContext:
     get_router: Callable[[], object | None]
     policy: Policy
     nearby: dict = field(default_factory=dict)  # api.app.load_nearby 결과
+    # 읍면동 경계 {이름: shapely 도형(경도·위도)}. 지역 공백 분석의 범위(api.app.load_areas)
+    areas: dict = field(default_factory=dict)
+    area_city: dict = field(default_factory=dict)  # {읍면동 이름: 시(제주시·서귀포시)}
     toilets: list = field(default_factory=list)
     toilets_in: Callable | None = None
     nearest: Callable | None = None
@@ -58,7 +77,17 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
 
     def search_places(a: SearchPlacesIn) -> dict:
         near = (a.near.lon, a.near.lat) if a.near else None
-        places = ctx.kakao.keyword(a.query, near, a.radius_m)[: ctx.policy.max_candidates]
+        if a.category and not (near and a.radius_m):
+            raise ToolError("invalid_args", "category needs near and radius")
+        if a.category:
+            found = ctx.kakao.category(a.category, near, a.radius_m)
+        elif a.only_kind and near and a.radius_m:
+            # 거르면 줄어들므로 카카오가 주는 끝까지(최대 45곳) 받아 맞는 곳만, 거리순 그대로
+            found, _ = ctx.kakao.search_all(query=a.query, near=near, radius_m=a.radius_m)
+            found = [p for p in found if is_kind(p, a.query)]
+        else:
+            found = ctx.kakao.keyword(a.query, near, a.radius_m)
+        places = found[: ctx.policy.max_candidates]
         return {"places": places, "source": "kakao", "checked_at": _now_iso()}
 
     def resolve_location(a: ResolveLocationIn) -> dict:
@@ -137,6 +166,143 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
         shown = render_plan(plan)
         return {**shown, "found": any(r["found"] for r in shown["routes"])}
 
+    def public_toilets(tool: str, **where) -> tuple[list[dict], bool, str, int]:
+        """공중화장실 공공데이터(주소만 있음)를 이번 계산 동안만 카카오 주소 검색으로 위치로 바꾼다(저장 안 함).
+        범위에 걸친 시(제주시·서귀포시)의 화장실만 바꾸고, 범위(사각형·원) 밖은 뺀다.
+        반환 (장소들, 시간 안에 다 못 바꿈, 출처, 주소로 위치를 못 찾은 수)."""
+        if "rect" in where:
+            w, s_, e, n = where["rect"]
+            reach = shapely.box(w, s_, e, n)
+            inside = lambda lon, lat: w <= lon <= e and s_ <= lat <= n  # noqa: E731
+        else:
+            (lon0, lat0), r = where["near"], where["radius_m"]
+            # 범위에 걸친 동네를 고르는 데만 쓰는 사각형(원을 덮음). 실제 범위 판정은 걷는 거리가 아닌 직선거리 r
+            dlat = r / M_PER_DEG_LAT
+            dlon = dlat / max(0.1, math.cos(math.radians(lat0)))
+            reach = shapely.box(lon0 - dlon, lat0 - dlat, lon0 + dlon, lat0 + dlat)
+            inside = lambda lon, lat: haversine_m(lon0, lat0, lon, lat) <= r  # noqa: E731
+        # 범위에 걸친 읍면동의 시(경계 자료가 없으면 두 시 모두)
+        cities = {ctx.area_city[n] for n, g in ctx.areas.items() if g.intersects(reach)} or {
+            "제주시", "서귀포시"}
+        cands = [t for t in ctx.toilets if any(c in a for c in cities for a in t["addresses"])]
+        until = time.monotonic() + ctx.policy.timeout_for(tool)
+
+        def locate(t):
+            if time.monotonic() >= until:
+                return t, None, True
+            return t, next((x for x in map(ctx.kakao.address, t["addresses"]) if x), None), False
+
+        found, unlocated, late = [], 0, False
+        with ThreadPoolExecutor(max_workers=GEOCODE_WORKERS) as pool:
+            for i, (t, spot, too_late) in enumerate(pool.map(locate, cands)):
+                late |= too_late
+                if spot is None:
+                    unlocated += not too_late
+                    continue
+                if inside(*spot):
+                    found.append({"ref": f"toilet:{i}", "name": t["name"], "address": t["addresses"][0],
+                                  "lon": spot[0], "lat": spot[1], "url": None})
+        return found, late, "public", unlocated
+
+    def facility_points(kind: str | None, theme: str | None, tool: str, **where):
+        """시설 후보 (장소들, 잘림, 출처, 위치 못 찾은 수). 공공데이터가 있으면 그것, 없으면 카카오(최대 45곳)."""
+        if kind == "toilet" and ctx.toilets:
+            return public_toilets(tool, **where)
+        if kind in ("wifi", "police"):
+            pts = [{**p, "ref": f"{kind}:{i}"} for i, p in enumerate(ctx.nearby.get(kind, []))]
+            if "rect" in where:
+                w, s, e, n = where["rect"]
+                pts = [p for p in pts if w <= p["lon"] <= e and s <= p["lat"] <= n]
+            return pts, False, "public", 0
+        what = KAKAO_FACILITY.get(kind) or (
+            {"code": THEME_CATEGORY[theme]} if theme in THEME_CATEGORY else {"query": theme}
+        )
+        if "rect" not in where:
+            found, truncated = ctx.kakao.search_all(**what, **where)
+            if theme:
+                found = [p for p in found if is_kind(p, theme)]
+            return found, truncated, "kakao", 0
+        # 사각형 검색은 카카오가 45곳에서 자르면 4칸으로 나눠 칸마다 다시 찾는다(빠짐없이 세려고).
+        # 이 도구에 주어진 시간(configs/agent_policy.json) 안에 다 못 나누면 잘림으로 알린다
+        until = time.monotonic() + ctx.policy.timeout_for("analyze_area_access")
+        todo, found, seen = [where["rect"]], [], set()
+        while todo:
+            if time.monotonic() >= until:
+                return found, True, "kakao", 0
+            w, s, e, n = todo.pop()
+            part, truncated = ctx.kakao.search_all(**what, rect=(w, s, e, n))
+            if truncated:
+                mx, my = (w + e) / 2, (s + n) / 2
+                todo += [(w, s, mx, my), (mx, s, e, my), (w, my, mx, n), (mx, my, e, n)]
+                continue
+            for x in part:
+                if theme and not is_kind(x, theme):
+                    continue
+                if x["ref"] not in seen:
+                    seen.add(x["ref"])
+                    found.append(x)
+        return found, False, "kakao", 0
+
+    def find_route_stops(a: RouteStopsIn) -> dict:
+        """§11.1 다음 후보 규칙을 출발지 한 단계에 적용: (a) 그곳->도착지 < 출발지->도착지(되돌아가지 않음)
+        (c) 우회 거리 오름차순, 동률은 이름순. 우회 상한 없음(§11.5). 우회 = 출발->후보 + 후보->도착 - 직행.
+        거리는 그래프 탐색 2번(출발지에서, 도착지에서)으로 모든 후보를 한꺼번에 구한다(§11.4)."""
+        o, d = (a.origin.lon, a.origin.lat), (a.destination.lon, a.destination.lat)
+        direct = router().distances_from(d, [o], a.mobility)[0]
+        if direct is None:
+            return {"status": "no_route"}
+        # (a)를 지키는 곳은 길 위에서 도착지까지 직행보다 가깝다. 시설·도착지가 길에서 떨어진 거리(스냅,
+        # 최대 MAX_SNAP_M)까지 더하면 직선거리 상한 = 직행 + 스냅 상한 2번(카카오 반경 상한 20km)
+        cands, truncated, source, unlocated = facility_points(
+            a.facility, a.theme, "find_route_stops", near=d, radius_m=int(direct + 2 * MAX_SNAP_M)
+        )
+        pts = [(c["lon"], c["lat"]) for c in cands]
+        to_end = router().distances_from(d, pts, a.mobility)
+        from_start = router().distances_from(o, pts, a.mobility)
+        ranked, unreachable = [], 0
+        for c, e, s in zip(cands, to_end, from_start, strict=True):
+            if e is None or s is None:
+                unreachable += 1
+                continue
+            if e >= direct:
+                continue
+            ranked.append({**c, "detour_m": s + e - direct, "from_start_m": s})
+        ranked.sort(key=lambda c: (c["detour_m"], c["name"]))
+        return {
+            "status": "ok",
+            "stops": ranked[:CARD_MAX],
+            "direct_m": direct,
+            "unreachable": unreachable,
+            "truncated": truncated,
+            "unlocated": unlocated,
+            "source": source,
+            "checked_at": _now_iso(),
+        }
+
+    def analyze_area_access(a: AreaAccessIn) -> dict:
+        area = ctx.areas.get(a.area)
+        if area is None:
+            raise ToolError("invalid_args", "unknown area")
+        until = time.monotonic() + ctx.policy.timeout_for("analyze_area_access")
+        found, truncated, source, unlocated = facility_points(
+            a.facility, None, "analyze_area_access", rect=area.bounds
+        )
+        # 동 경계 안 시설만 센다(경계 밖 시설은 셈에서 빠짐을 화면에 밝힌다)
+        found = [f for f in found if shapely.contains_xy(area, f["lon"], f["lat"])]
+        base = {"facilities": found, "truncated": truncated, "source": source,
+                "unlocated": unlocated, "checked_at": _now_iso()}
+        if truncated:  # 다 세지 못한 시설로 '먼 곳'을 말하면 틀린 공백이 된다: 계산하지 않음
+            return {**base, "status": "truncated"}
+        try:
+            points = router().nearest_source_distances(
+                [(f["lon"], f["lat"]) for f in found], area, a.mobility, until=until
+            )
+        except TimeoutError:
+            raise ToolError("timeout", "area access") from None
+        if points is None:
+            return {**base, "status": "unsupported_mobility"}
+        return {**base, "status": "ok", "points": points}
+
     def get_travel_matrix(a: MatrixIn) -> dict:
         key = (
             (round(a.source.lon, 6), round(a.source.lat, 6)),
@@ -180,6 +346,18 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
                 "두 위치 사이 걷는 길 세 가지 비교",
                 CompareRoutesIn,
                 compare_routes,
+            ),
+            ToolSpec(
+                "find_route_stops",
+                "두 곳 사이 걷는 길에 들를 시설 후보와 우회 거리",
+                RouteStopsIn,
+                find_route_stops,
+            ),
+            ToolSpec(
+                "analyze_area_access",
+                "한 지역 길에서 가장 가까운 시설까지 걷는 거리",
+                AreaAccessIn,
+                analyze_area_access,
             ),
             ToolSpec(
                 "get_travel_matrix",

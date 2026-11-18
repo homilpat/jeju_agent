@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from shapely.geometry import box
+
 from jeju_lifepath.agent.models import Policy, ToolError
 from jeju_lifepath.agent.parse import SEOUL
 from jeju_lifepath.agent.services import AgentContext
@@ -60,7 +62,23 @@ PLACES = [  # (id, 이름, 검색어들, 경도, 위도, 분류)
     ("k8", "중앙약국", ("약국",), LON0 + 2 * STEP, LAT0 + 2 * STEP + 0.0003, "약국"),
     ("k9", "한라공원", ("한라공원", "공원"), LON0 + 3 * STEP, LAT0 + 5 * STEP, "공원"),
     ("k10", "한라공원 주차장", ("한라공원",), LON0 + 3 * STEP + 0.0004, LAT0 + 5 * STEP, "주차장"),
+    ("k11", "격자미술관", ("미술관",), LON0 + 2 * STEP, LAT0 + 3 * STEP, "미술관"),
+    # 이름에 '빵'이 들어 있지만 빵집이 아닌 곳(종류 거르기 시험용)
+    ("k12", "빵빵주차장", ("빵집",), LON0 + 2 * STEP, LAT0 + 2 * STEP, "주차장"),
 ]
+# 가짜 분류 경로(실제 카카오 분류 경로 모양)
+CATEGORY_PATHS = {
+    "제과,베이커리": "음식점 > 간식 > 제과,베이커리",
+    "카페": "음식점 > 카페",
+    "해수욕장": "여행 > 관광,명소 > 해수욕장,해변",
+    "한식": "음식점 > 한식",
+    "약국": "의료,건강 > 약국",
+    "공원": "여행 > 공원",
+    "주차장": "교통,수송 > 교통시설 > 주차장",
+    "미술관": "문화,예술 > 문화시설 > 미술관",
+}
+# 가짜 카카오 분류 코드 -> 그 분류에 드는 검색어(PLACES의 검색어들)
+CATEGORY_KEYS = {"PM9": "약국", "CT1": "미술관", "AT4": "공원"}
 AREAS = {"격자동": (CENTER["lon"], CENTER["lat"]), "격자마을": (LON0, LAT0)}
 
 
@@ -71,6 +89,7 @@ class FakeKakao:
         self.places = places
         self.calls: list[str] = []
         self.fail_queue: list[ToolError] = []
+        self.truncate: set[str] = set()
 
     def _maybe_fail(self, name: str):
         self.calls.append(name)
@@ -83,6 +102,7 @@ class FakeKakao:
             "ref": pid,
             "name": name,
             "category": cat,
+            "category_path": CATEGORY_PATHS[cat].split(" > "),
             "address": f"제주특별자치도 제주시 격자동 {pid}",
             "lon": lon,
             "lat": lat,
@@ -103,13 +123,25 @@ class FakeKakao:
         hits = [
             p
             for p in self.places
-            if "약국" in p[2] and haversine_m(near[0], near[1], p[3], p[4]) <= radius_m
+            if CATEGORY_KEYS[code] in p[2] and haversine_m(near[0], near[1], p[3], p[4]) <= radius_m
         ]
         return [self._doc(p, near) for p in hits[:size]]
 
+    def search_all(self, *, query=None, code=None, near=None, radius_m=None, rect=None):
+        """여러 쪽 검색 흉내. truncate에 검색어·분류 코드를 넣으면 '더 있음'으로 답한다."""
+        self._maybe_fail("search_all")
+        key = query or CATEGORY_KEYS[code]
+        hits = [p for p in self.places if any(key in k or k in key for k in p[2])]
+        if rect:
+            w, s, e, n = rect
+            hits = [p for p in hits if w <= p[3] <= e and s <= p[4] <= n]
+        else:
+            hits = [p for p in hits if haversine_m(near[0], near[1], p[3], p[4]) <= radius_m]
+        return [self._doc(p, near) for p in hits[:45]], (query or code) in self.truncate
+
     def address(self, query):
         self._maybe_fail("address")
-        return AREAS.get(query)
+        return AREAS.get(query) or AREAS.get(query.split()[-1])  # "제주시 격자마을"도 찾음
 
     def region(self, lon, lat):
         self._maybe_fail("region")
@@ -123,6 +155,9 @@ def make_context(policy: Policy | None = None, kakao=None, router=None) -> Agent
         get_router=lambda: r,
         policy=policy or Policy.load(),
         nearby={"wifi": [], "police": []},
+        # 격자 전체를 덮는 합성 동네 하나(실제 행정동 아님)
+        areas={"격자동": box(LON0 - 0.001, LAT0 - 0.001, LON0 + 0.011, LAT0 + 0.011)},
+        area_city={"격자동": "제주시"},
         toilets=[],
         toilets_in=lambda t, c, r: [],
         nearest=lambda pts, lat, lon: [],

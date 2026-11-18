@@ -18,7 +18,8 @@
     {
       "id": "A03-route-between-places",
       "split": "dev",
-      "turns": [{"text": "격자동에서 격자마을까지 가는 길"}],
+      "_note": "2026-11-19 경로 유형 되묻기(§6)가 생겨 버튼 답 한 턴을 더함",
+      "turns": [{"text": "격자동에서 격자마을까지 가는 길"}, {"text": "안전환경 우선 경로로"}],
       "expect": {"intent": "route", "status": "ok", "required_tools": ["resolve_location", "compare_routes"],
                  "forbidden_tools": ["get_travel_matrix"], "trip_changes": 0}
     },

@@ -21,6 +21,7 @@ from datetime import date
 from pathlib import Path
 from typing import Annotated, Literal
 
+import shapely.geometry
 from fastapi import Cookie, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -31,10 +32,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from jeju_lifepath.agent.kakao import KakaoLocal
 from jeju_lifepath.agent.llm import OpenAICompatibleLLM
-from jeju_lifepath.agent.models import Policy
-from jeju_lifepath.agent.orchestrator import Agent, Conflict, NotFound
+from jeju_lifepath.agent.models import Policy, ToolError
+from jeju_lifepath.agent.orchestrator import Agent, Conflict, NotFound, locate_trip
 from jeju_lifepath.agent.services import AgentContext
-from jeju_lifepath.api.store import SESSION_DAYS, Store
+from jeju_lifepath.api.store import SESSION_DAYS, TITLE_MAX, DraftOutdated, Store
 from jeju_lifepath.geo.geodesy import haversine_m
 from jeju_lifepath.presentation.route import render_plan
 from jeju_lifepath.schemas import MobilityProfile, RoutePreference
@@ -65,6 +66,8 @@ SessionCookie = Annotated[str | None, Cookie(alias=COOKIE)]
 MSG_INVALID_INPUT = "입력한 내용을 다시 확인해 주세요."
 MSG_LOGIN_NEEDED = "로그인이 필요해요. 다시 로그인해 주세요."
 MSG_NOT_FOUND = "찾는 여행 계획이 없어요."
+MSG_LOCATE_FAILED = "장소 위치를 다시 찾지 못했어요. 잠시 후 다시 열어 주세요."
+MSG_DRAFT_OUTDATED = "그사이 원래 여행이 바뀌었어요. 새 여행으로 저장하거나 다시 고쳐 달라고 해 주세요."
 MSG_GENERIC = "잠시 문제가 생겼어요. 다시 시도해 주세요."
 # 프레임워크 기본 오류 문구(영어)는 보여주지 않고 상태별 한국어 문장으로 바꾼다
 FALLBACK_BY_STATUS = {400: MSG_INVALID_INPUT, 401: MSG_LOGIN_NEEDED, 404: "찾는 페이지가 없어요."}
@@ -258,6 +261,18 @@ def load_nearby(processed_dir: Path) -> dict[str, list[dict]]:
     return out
 
 
+def load_areas(processed_dir: Path) -> tuple[dict, dict]:
+    """읍면동 경계 ({이름: shapely 도형}, {이름: 시}). scripts/fetch_admdong.py가 만든 파일, 없으면 빈 사전."""
+    path = processed_dir / "jeju-admdong.geojson"
+    if not path.exists():
+        return {}, {}
+    feats = json.loads(path.read_text(encoding="utf-8"))["features"]
+    shapes = {f["properties"]["name"]: shapely.geometry.shape(f["geometry"]) for f in feats}
+    # full_name 예: "제주특별자치도 제주시 한림읍"
+    cities = {f["properties"]["name"]: f["properties"]["full_name"].split()[1] for f in feats}
+    return shapes, cities
+
+
 def nearest(points: list[dict], lat: float, lon: float, limit: int = NEARBY_LIMIT) -> list[dict]:
     ranked = sorted(
         ({**p, "distance_m": round(haversine_m(lon, lat, p["lon"], p["lat"]))} for p in points),
@@ -289,6 +304,7 @@ class AgentTripMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     anchor_text: str | None = Field(default=None, max_length=40)
+    anchor_ref: str | None = Field(default=None, max_length=40)  # 기준 지명의 카카오 장소 번호
     start_point: LatLon | None = None  # 지금 위치에서 시작한 일정의 출발점(약 10m 단위)
     destination_text: str | None = Field(default=None, max_length=40)
     round_trip: bool = True
@@ -374,8 +390,14 @@ class ScreenContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: Literal["planners", "editor", "travel"]
+    name: Literal["planners", "editor", "travel", "chat"]
     travel_stop: int | None = Field(default=None, ge=0, le=MAX_PLACES)
+
+
+class ConversationTitle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=200)  # 서버가 앞 40자로 자름
 
 
 class AgentMessage(BaseModel):
@@ -387,6 +409,8 @@ class AgentMessage(BaseModel):
     text: str = Field(min_length=1, max_length=500)
     location: LatLon | None = None  # 사용자가 위치 사용을 허락했을 때만. 저장하지 않음
     trip_id: int | None = None
+    # trip_id가 없을 때 이 대화에 연결해 둔 여행도 쓰지 않는다(화면에서 "그만 보기")
+    detach_trip: bool = False
     map_view: MapView | None = None
     screen: ScreenContext | None = None
 
@@ -441,6 +465,7 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     public_points = load_public_points(processed_dir)
     toilets = load_toilets(toilet_file)
     nearby = load_nearby(processed_dir)
+    areas, area_city = load_areas(processed_dir)
     app = FastAPI(title="JEJU LifePath", docs_url=None, redoc_url=None, openapi_url=None)
 
     _install_error_handlers(app)
@@ -532,6 +557,34 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
         if store.save_planner(user_id, planner_body(planner, public_points), planner_id) is None:
             raise HTTPException(404, MSG_NOT_FOUND)
         return {"id": planner_id}
+
+    @app.get("/api/planners/{planner_id}/located")
+    def located_places(planner_id: int, token: SessionCookie = None) -> dict:
+        """AI가 만든 장소를 만들 때와 같은 기준으로 다시 찾은 위치(응답에만, 저장 안 함)."""
+        found = store.get_trip(current_user(token), planner_id)
+        if found is None:
+            raise HTTPException(404, MSG_NOT_FOUND)
+        try:
+            places = locate_trip(agent.ctx.kakao, found[0])
+        except ToolError:
+            raise HTTPException(503, MSG_LOCATE_FAILED) from None
+        return {
+            "places": {
+                ref: {k: p[k] for k in ("name", "category", "address", "lat", "lon", "url")}
+                for ref, p in places.items()
+            }
+        }
+
+    @app.post("/api/planners/{planner_id}/save")
+    def save_draft(planner_id: int, overwrite: bool = False, token: SessionCookie = None) -> dict:
+        """AI가 만든 초안을 내 여행에 넣는다. overwrite: 고친 원래 여행에 덮어쓰기."""
+        try:
+            saved = store.save_draft(current_user(token), planner_id, overwrite)
+        except DraftOutdated:
+            raise HTTPException(409, MSG_DRAFT_OUTDATED) from None
+        if saved is None:
+            raise HTTPException(404, MSG_NOT_FOUND)
+        return {"id": saved}
 
     @app.delete("/api/planners/{planner_id}", status_code=204)
     def delete_planner(planner_id: int, token: SessionCookie = None) -> None:
@@ -625,6 +678,8 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
             get_router=get_router,
             policy=policy,
             nearby=nearby,
+            areas=areas,
+            area_city=area_city,
             toilets=toilets,
             toilets_in=toilets_in,
             nearest=nearest,
@@ -654,6 +709,7 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
             conversation_id=body.conversation_id,
             location=body.location.model_dump() if body.location else None,
             trip_id=body.trip_id,
+            detach_trip=body.detach_trip,
             map_view=body.map_view.model_dump() if body.map_view else None,
             screen=body.screen.model_dump() if body.screen else None,
         )
@@ -674,6 +730,26 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     @app.get("/api/agent/runs/{run_id}")
     def agent_run(run_id: str, detail: bool = False, token: SessionCookie = None) -> dict:
         return agent_call(agent.run_status, current_user(token), run_id, detail)
+
+    @app.get("/api/agent/conversations")
+    def agent_conversations(token: SessionCookie = None) -> dict:
+        """지난 대화 목록(보유기간 안의 것만, 최근 것부터)."""
+        return {"conversations": store.list_conversations(current_user(token))}
+
+    @app.patch("/api/agent/conversations/{conversation_id}")
+    def agent_conversation_title(
+        conversation_id: str, body: ConversationTitle, token: SessionCookie = None
+    ) -> dict:
+        """대화 제목 바꾸기. title이 비었거나 null이면 붙인 제목을 지우고 기본 제목(첫 질문)으로."""
+        title = (body.title or "").strip()[:TITLE_MAX] or None
+        if not store.set_conversation_title(current_user(token), conversation_id, title):
+            raise HTTPException(404, MSG_AGENT_NOT_FOUND)
+        return {"title": title, "custom": bool(title)}
+
+    @app.delete("/api/agent/conversations/{conversation_id}", status_code=204)
+    def agent_conversation_delete(conversation_id: str, token: SessionCookie = None) -> None:
+        if not store.delete_conversation(current_user(token), conversation_id):
+            raise HTTPException(404, MSG_AGENT_NOT_FOUND)
 
     @app.get("/api/agent/conversations/{conversation_id}")
     def agent_conversation(conversation_id: str, token: SessionCookie = None) -> dict:

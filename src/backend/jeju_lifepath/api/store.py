@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS planners (
 """
 
 # 순서대로 한 번씩 적용한다. 이미 적용된 단계는 건너뛴다(user_version).
+TITLE_MAX = 40  # 대화 제목 글자 수(기본 제목도 첫 질문을 여기까지 자름)
+
 MIGRATIONS = [
     # 1: 여행(플래너) 버전 + Agent 대화·실행·도구 호출 기록
     """
@@ -92,6 +94,17 @@ MIGRATIONS = [
     );
     CREATE INDEX tool_invocations_run ON tool_invocations(user_id, run_id);
     """,
+    # 2: AI가 만든 일정은 초안(draft=1)으로 두고 사용자가 저장해야 내 여행 목록에 보인다.
+    # draft=2: 원래 여행에 덮어써 다 쓴 초안(행을 남겨 번호가 새 초안에 다시 쓰이지 않게).
+    # draft_of: 저장된 여행을 대화에서 고친 초안이면 원래 여행 번호
+    """
+    ALTER TABLE planners ADD COLUMN draft INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE planners ADD COLUMN draft_of INTEGER;
+    """,
+    # 3: draft_base: 초안을 만들 때 원래 여행 버전(덮어쓸 때 그사이 바뀌었는지 본다)
+    """
+    ALTER TABLE planners ADD COLUMN draft_base INTEGER;
+    """,
 ]
 
 # 실행이 끝나지 않은 상태. 서버가 다시 켜질 때 이 상태로 남은 실행은 중단된 것으로 본다
@@ -100,6 +113,10 @@ ACTIVE_STAGES = ("pending", "interpreting", "running_tool", "observing", "valida
 
 class VersionConflict(Exception):
     """기대한 여행 버전과 저장된 버전이 다름(다른 곳에서 먼저 고침)."""
+
+
+class DraftOutdated(Exception):
+    """덮어쓰려는 원래 여행이 초안을 만든 뒤 바뀌었음."""
 
 
 class RunCancelled(Exception):
@@ -221,9 +238,13 @@ class Store:
         return rows[0][0] if rows else None
 
     # planners (= 여행) ------------------------------------------------------
-    def list_planners(self, user_id: int) -> list[tuple[int, dict, str]]:
+    def list_planners(
+        self, user_id: int, include_drafts: bool = False
+    ) -> list[tuple[int, dict, str]]:
         rows = self._rows(
-            "SELECT id, body, updated_at FROM planners WHERE user_id = ? ORDER BY updated_at DESC",
+            "SELECT id, body, updated_at FROM planners WHERE user_id = ?"
+            + ("" if include_drafts else " AND draft = 0")
+            + " ORDER BY updated_at DESC",
             (user_id,),
         )
         return [(pid, json.loads(body), updated) for pid, body, updated in rows]
@@ -235,7 +256,8 @@ class Store:
     def get_trip(self, user_id: int, planner_id: int) -> tuple[dict, int, str] | None:
         """(본문, 버전, 고친 시각). 다른 사용자의 여행이면 None."""
         rows = self._rows(
-            "SELECT body, version, updated_at FROM planners WHERE id = ? AND user_id = ?",
+            "SELECT body, version, updated_at FROM planners"
+            " WHERE id = ? AND user_id = ? AND draft != 2",
             (planner_id, user_id),
         )
         return (json.loads(rows[0][0]), rows[0][1], rows[0][2]) if rows else None
@@ -258,6 +280,51 @@ class Store:
             )
         return planner_id if cur.rowcount else None
 
+    def draft_info(self, user_id: int, planner_id: int) -> dict | None:
+        """AI 초안이면 {"replaces": 원래 여행이 있는지}, 저장된 여행이면 None."""
+        rows = self._rows(
+            "SELECT draft, draft_of FROM planners WHERE id = ? AND user_id = ?",
+            (planner_id, user_id),
+        )
+        if not rows or not rows[0][0]:
+            return None
+        return {"replaces": rows[0][1] is not None}
+
+    def save_draft(self, user_id: int, draft_id: int, overwrite: bool) -> int | None:
+        """초안을 내 여행에 넣는다. overwrite면 원래 여행 본문을 초안으로 바꾸고 초안은 다 쓴 것으로 표시.
+        반환: 저장된 여행 번호. 초안이 아니거나(이미 저장) 남의 것이면 None.
+        원래 여행이 초안을 만든 뒤 바뀌었으면 DraftOutdated(그사이 고친 내용을 덮지 않게)."""
+        now = _now().isoformat()
+        with self._tx() as db:
+            row = db.execute(
+                "SELECT body, draft_of, draft_base FROM planners"
+                " WHERE id = ? AND user_id = ? AND draft = 1",
+                (draft_id, user_id),
+            ).fetchone()
+            if row is None:
+                return None
+            body, original, base = row
+            current = original is not None and db.execute(
+                "SELECT version FROM planners WHERE id = ? AND user_id = ? AND draft = 0",
+                (original, user_id),
+            ).fetchone()
+            if overwrite and current:
+                if current[0] != base:
+                    raise DraftOutdated(draft_id)
+                db.execute(
+                    "UPDATE planners SET body = ?, updated_at = ?, version = version + 1"
+                    " WHERE id = ?",
+                    (body, now, original),
+                )
+                db.execute("UPDATE planners SET draft = 2 WHERE id = ?", (draft_id,))
+                return original
+            # 새 여행으로(원래 여행이 그사이 지워졌어도 여기로)
+            db.execute(
+                "UPDATE planners SET draft = 0, draft_of = NULL, updated_at = ? WHERE id = ?",
+                (now, draft_id),
+            )
+        return draft_id
+
     def delete_planner(self, user_id: int, planner_id: int) -> bool:
         with self._tx() as db:
             cur = db.execute(
@@ -273,15 +340,73 @@ class Store:
         )
         return (json.loads(rows[0][0]), rows[0][1]) if rows else None
 
+    def list_conversations(self, user_id: int) -> list[dict]:
+        """내 대화 목록(최근 것부터). 제목은 사용자가 붙인 제목, 없으면 첫 질문 앞부분(기본 제목)."""
+        out = []
+        for cid, state, updated in self._rows(
+            "SELECT id, state, updated_at FROM conversations WHERE user_id = ?"
+            " ORDER BY updated_at DESC",
+            (user_id,),
+        ):
+            data = json.loads(state)
+            first = next((h["text"] for h in data.get("history", []) if h.get("role") == "user"), "")
+            if first:  # 아직 말이 없는 대화는 목록에 넣지 않음
+                title = data.get("title")
+                out.append({"id": cid, "title": title or first[:TITLE_MAX],
+                            "custom": bool(title), "updated_at": updated})
+        return out
+
+    def set_conversation_title(self, user_id: int, conversation_id: str, title: str | None) -> bool:
+        """대화 제목 바꾸기. None이면 붙인 제목을 지워 기본 제목(첫 질문)으로. 내 대화가 아니면 False.
+        revision을 올려, 실행 중인 요청이 저장할 때 이 제목을 덮지 않고 합치게 한다."""
+        with self._tx() as db:
+            row = db.execute(
+                "SELECT state, revision FROM conversations WHERE id = ? AND user_id = ?",
+                (conversation_id, user_id),
+            ).fetchone()
+            if row is None:
+                return False
+            state = json.loads(row[0])
+            if title:
+                state["title"] = title
+            else:
+                state.pop("title", None)
+            db.execute(
+                "UPDATE conversations SET state = ?, revision = ? WHERE id = ?",
+                (_dumps(state), row[1] + 1, conversation_id),
+            )
+        return True
+
+    def delete_conversation(self, user_id: int, conversation_id: str) -> bool:
+        """대화와 그 대화의 실행·도구 호출 기록을 지운다. 지운 것이 없으면(남의 대화 포함) False.
+        첫 답이 오기 전이라 대화 행이 아직 없어도 실행 기록은 지운다(끝난 뒤 되살아나지 않게)."""
+        with self._tx() as db:
+            gone = db.execute(
+                "DELETE FROM conversations WHERE id = ? AND user_id = ?", (conversation_id, user_id)
+            ).rowcount
+            db.execute(
+                "DELETE FROM tool_invocations WHERE user_id = ? AND run_id IN"
+                " (SELECT run_id FROM agent_runs WHERE user_id = ? AND conversation_id = ?)",
+                (user_id, user_id, conversation_id),
+            )
+            gone += db.execute(
+                "DELETE FROM agent_runs WHERE user_id = ? AND conversation_id = ?",
+                (user_id, conversation_id),
+            ).rowcount
+        return bool(gone)
+
     def conversation_owner(self, conversation_id: str) -> int | None:
         rows = self._rows("SELECT user_id FROM conversations WHERE id = ?", (conversation_id,))
         return rows[0][0] if rows else None
 
     def save_conversation(
-        self, user_id: int, conversation_id: str, state: dict, expected_revision: int = 0
+        self, user_id: int, conversation_id: str, state: dict, expected_revision: int = 0,
+        run_id: str | None = None,
     ) -> bool:
         """대화 상태 저장. 저장된 revision이 expected_revision과 같을 때만 저장하고 True.
-        다른 요청이 먼저 저장했으면 False. 다른 사용자의 대화 ID면 PermissionError."""
+        다른 요청이 먼저 저장했으면 False. 다른 사용자의 대화 ID면 PermissionError.
+        run_id: 대화를 새로 만들 때 이 실행 기록이 아직 있어야 만든다(그사이 사용자가 대화를 지웠으면
+        실행 기록도 지워져 있다). 확인과 저장을 한 처리 안에서 해 지운 대화가 되살아나지 않게 한다."""
         now = _now().isoformat()
         with self._tx() as db:
             row = db.execute(
@@ -291,6 +416,10 @@ class Store:
                 raise PermissionError(conversation_id)
             current = row[1] if row else 0
             if current != expected_revision:
+                return False
+            if row is None and run_id and not db.execute(
+                "SELECT 1 FROM agent_runs WHERE user_id = ? AND run_id = ?", (user_id, run_id)
+            ).fetchone():
                 return False
             if row is None:
                 db.execute(
@@ -421,10 +550,18 @@ class Store:
                 raise RunCancelled(run_id)
             if row[1]:  # 이미 게시했다(재개 중 중복 게시 방지)
                 raise VersionConflict(run_id)
-            if trip_id is None:
+            # AI가 만든 일정은 초안으로 둔다. 저장된 여행을 고치면 원래 여행은 그대로 두고 고친 초안을 따로 만든다
+            saved = trip_id is not None and db.execute(
+                "SELECT version FROM planners WHERE id = ? AND user_id = ? AND draft = 0",
+                (trip_id, user_id),
+            ).fetchone()
+            if saved and saved[0] != expected_version:
+                raise VersionConflict(run_id)
+            if trip_id is None or saved:
                 cur = db.execute(
-                    "INSERT INTO planners (user_id, body, updated_at) VALUES (?,?,?)",
-                    (user_id, _dumps(body), now),
+                    "INSERT INTO planners (user_id, body, updated_at, draft, draft_of, draft_base)"
+                    " VALUES (?,?,?,1,?,?)",
+                    (user_id, _dumps(body), now, trip_id, saved[0] if saved else None),
                 )
                 trip_id, version = cur.lastrowid, 1
             else:

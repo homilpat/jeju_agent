@@ -10,10 +10,12 @@
 from __future__ import annotations
 
 import csv
+import heapq
 import io
 import json
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
@@ -304,6 +306,48 @@ class WalkRouter:
             best = min(options) if options else None
             out.append(None if best is None or (cutoff_m and best > cutoff_m) else best)
         return out
+
+    def nearest_source_distances(
+        self,
+        sources: list[tuple[float, float]],
+        area,
+        mobility: MobilityProfile = MobilityProfile.STANDARD,
+        until: float | None = None,
+    ) -> list[tuple[tuple[float, float], float | None]] | None:
+        """area(경도·위도 shapely 도형) 안의 길 위 지점(교차점·길 끝·꺾이는 점, 보행망 노드)마다
+        가장 가까운 source(시설)까지 보행망 최단 거리(m). 시설 전부를 출발점으로 한 탐색 한 번
+        (§2 E01 공백 분석). 닿는 시설이 없으면 None. 스냅 거리(시설에서 길까지)는 distances_from과
+        같이 넣지 않는다. 공유 그래프를 바꾸지 않아 잠금이 필요 없다.
+        until(time.monotonic 기준)을 넘기면 TimeoutError. 확인 구간만 쓰는 이동(휠체어)은 None."""
+        policy = DEFAULT_MOBILITY_POLICIES[mobility]
+        if policy.verified_only:
+            return None
+        key = "flat" if policy.requires_step_free else "length"
+        g = self.net.graph
+        heap: list[tuple[float, str]] = []
+        for lon, lat in sources:
+            s = self.net.snap(lon, lat)
+            if s is None or s.distance_m > MAX_SNAP_M or (s.segment.steps and key == "flat"):
+                continue
+            seg = s.segment
+            heap += [(s.fraction * seg.length_m, seg.u), ((1 - s.fraction) * seg.length_m, seg.v)]
+        heapq.heapify(heap)
+        dist: dict[str, float] = {}
+        while heap:
+            if until is not None and len(dist) % 1000 == 0 and time.monotonic() > until:
+                raise TimeoutError("area access search")
+            d, u = heapq.heappop(heap)
+            if u in dist:
+                continue
+            dist[u] = d
+            for v, e in g[u].items():
+                w = e[key]
+                if w is not None and v not in dist:
+                    heapq.heappush(heap, (d + w, v))
+        nodes = list(self.net.node_lonlat.items())
+        xy = np.array([at for _, at in nodes])
+        inside = shapely.contains_xy(area, xy[:, 0], xy[:, 1])
+        return [(at, dist.get(n)) for (n, at), ok in zip(nodes, inside, strict=True) if ok]
 
     def _baseline(self, o: str, d: str, pieces: list[_Piece], step_free: bool) -> float | None:
         """전체망 최단 거리. 계단을 못 가는 사람은 계단 구간을 뺀 거리

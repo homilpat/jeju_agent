@@ -14,7 +14,12 @@ from jeju_lifepath.schemas import MobilityProfile, RoutePreference
 ROOT = Path(__file__).resolve().parents[4]
 POLICY_FILE = ROOT / "configs" / "agent_policy.json"
 
-Intent = Literal["guide", "route", "plan_create", "plan_modify", "chat", "unsupported"]
+# route_poi: 두 곳 사이 걷는 길에 들를 시설(§2 C02), area_gap: 한 지역의 시설 접근 공백(§2 E01),
+# save_trip: 대화에서 만든 일정 초안을 내 여행에 저장
+Intent = Literal[
+    "guide", "route", "route_poi", "area_gap", "plan_create", "plan_modify", "save_trip", "chat",
+    "unsupported",
+]
 # 응답 상태(12.7). 화면 코드가 분기에만 쓰고 사용자에게 보여주지 않는다
 Status = Literal["ok", "needs_input", "partial", "infeasible", "unsupported", "error", "cancelled"]
 Facility = Literal["pharmacy", "toilet", "wifi", "police"]
@@ -43,6 +48,11 @@ class Slots(BaseModel):
     free_minutes: int | None = Field(default=None, ge=1, le=1440)
     route_preference: RoutePreference | None = None
     prefer_cctv: bool | None = None
+    save_mode: Literal["overwrite", "new"] | None = None  # 저장할 때 원래 여행에 덮어쓸지
+    # 여러 날 요청: 날마다 들를 종류(첫날부터 차례로). 하루씩 따로 짠다
+    day_themes: list[list[str]] = Field(default_factory=list)
+    next_day: bool = False  # "2일차 일정도 짜줘": 앞서 말한 여러 날 중 다음 날
+    day_no: int | None = Field(default=None, ge=1, le=10)  # 몇 일차 일정인지(제목·날짜용)
 
 
 class Change(BaseModel):
@@ -68,6 +78,7 @@ class ParseResult(BaseModel):
     slot_sources: dict[str, SlotSource] = Field(default_factory=dict)
     reference_time: str = ""  # 상대 시각("오늘", "6시")을 푼 기준 시각
     parser: Literal["rules", "llm", "mock"] = "rules"
+    reply: str = ""  # 잡담·도움말에 LLM이 쓴 답(검사를 통과한 것만)
 
 
 class ToolError(Exception):

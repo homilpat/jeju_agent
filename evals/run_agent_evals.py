@@ -87,8 +87,9 @@ def run_case(case: dict, llm, tmp: Path) -> dict:
         conv = resp["conversation_id"]
         calls += agent.last_trajectory
         statuses.append(resp["status"])
-        trips = store.list_planners(uid)
-        versions.append(sum(store.get_trip(uid, t[0])[1] for t in trips))
+        # 여행이 바뀐 횟수: 저장 전 초안까지 센다(AI 일정은 저장 버튼 전까지 목록에 안 보이는 초안)
+        versions.append(sum(v for (v,) in store._rows(
+            "SELECT version FROM planners WHERE user_id = ?", (uid,))))
     elapsed = time.monotonic() - started
     trace = agent.run_status(uid, resp["run_id"], detail=True)["trace"]
     exp = case["expect"]

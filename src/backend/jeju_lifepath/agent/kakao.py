@@ -22,6 +22,8 @@ def to_place(doc: dict) -> dict:
         "ref": doc["id"],
         "name": doc.get("place_name") or doc.get("address_name") or "",
         "category": (doc.get("category_name") or "").split(" > ")[-1] or None,
+        # 분류 경로 전체(종류 거르기용, 화면에 쓰지 않음)
+        "category_path": [x for x in (doc.get("category_name") or "").split(" > ") if x],
         "address": doc.get("road_address_name") or doc.get("address_name") or "",
         "lon": float(doc["x"]),
         "lat": float(doc["y"]),
@@ -90,6 +92,39 @@ class KakaoLocal:
             },
         )["documents"]
         return [to_place(d) for d in docs]
+
+    def search_all(
+        self,
+        *,
+        query: str | None = None,
+        code: str | None = None,
+        near: tuple[float, float] | None = None,
+        radius_m: int | None = None,
+        rect: tuple[float, float, float, float] | None = None,
+    ) -> tuple[list[dict], bool]:
+        """카카오가 주는 만큼(쪽당 15곳, 최대 3쪽 = 45곳). 키워드(query) 또는 분류 코드(code),
+        위치는 원(near, radius_m) 또는 사각형(rect = 서, 남, 동, 북).
+        반환 (장소들, 잘림): 잘림은 카카오가 45곳보다 더 있다고 알렸을 때 True."""
+        params: dict = {"size": 15}
+        if query:
+            params["query"] = query
+        else:
+            params["category_group_code"] = code
+        if rect:
+            params["rect"] = ",".join(str(v) for v in rect)
+        else:
+            params.update(x=near[0], y=near[1], radius=min(radius_m, 20000), sort="distance")
+        path = "search/keyword.json" if query else "search/category.json"
+        out: list[dict] = []
+        meta: dict = {}
+        for page in (1, 2, 3):
+            data = self._get(path, {**params, "page": page})
+            out += [to_place(d) for d in data["documents"]
+                    if (d.get("address_name") or "").startswith("제주")]
+            meta = data.get("meta") or {}
+            if meta.get("is_end", True):
+                break
+        return out, int(meta.get("total_count") or 0) > int(meta.get("pageable_count") or 0)
 
     def address(self, query: str) -> tuple[float, float] | None:
         docs = self._get("search/address.json", {"query": query})["documents"]

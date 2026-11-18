@@ -38,6 +38,10 @@ export const api = {
   createPlanner: (planner) => request("POST", "/planners", planner),
   updatePlanner: (id, planner) => request("PUT", `/planners/${id}`, planner),
   deletePlanner: (id) => request("DELETE", `/planners/${id}`),
+  // AI가 만든 장소를 만들 때와 같은 기준으로 다시 찾은 위치(서버가 계산, 저장 안 함)
+  locatedPlaces: (id) => request("GET", `/planners/${id}/located`),
+  // AI가 만든 초안을 내 여행에 넣기. overwrite: 고친 원래 여행에 덮어쓰기
+  saveDraft: (id, overwrite) => request("POST", `/planners/${id}/save${overwrite ? "?overwrite=true" : ""}`),
   // 경로 계산용 임시 좌표(저장 안 함)
   // mobility: 플래너에 저장된 이동 조건(유모차·휠체어). 없으면 서버 기본(일반 보행)
   compareRoutes: (origin, destination, preferCctv = false, mobility = null) =>
@@ -57,6 +61,10 @@ export const api = {
       map_view: mapView || null,
     }),
   agentConversation: (id) => request("GET", `/agent/conversations/${encodeURIComponent(id)}`),
+  agentConversations: () => request("GET", "/agent/conversations"),
+  deleteConversation: (id) => request("DELETE", `/agent/conversations/${encodeURIComponent(id)}`),
+  // title이 null이면 붙인 제목을 지우고 기본 제목(첫 질문)으로 돌아간다
+  renameConversation: (id, title) => request("PATCH", `/agent/conversations/${encodeURIComponent(id)}`, { title }),
 };
 
 // 범죄주의구간 지도 그림 주소(지금 보이는 지도 사각형·픽셀 크기). 서버가 키를 숨기고 대신 받아 준다
