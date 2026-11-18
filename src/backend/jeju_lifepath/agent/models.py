@@ -18,11 +18,14 @@ POLICY_FILE = ROOT / "configs" / "agent_policy.json"
 # save_trip: 대화에서 만든 일정 초안을 내 여행에 저장
 Intent = Literal[
     "guide", "route", "route_poi", "area_gap", "plan_create", "plan_modify", "save_trip", "chat",
-    "unsupported",
+    "unsupported", "olle",
 ]
 # 응답 상태(12.7). 화면 코드가 분기에만 쓰고 사용자에게 보여주지 않는다
 Status = Literal["ok", "needs_input", "partial", "infeasible", "unsupported", "error", "cancelled"]
-Facility = Literal["pharmacy", "toilet", "wifi", "police"]
+# night_pharmacy·nursing_room·emergency: 제주데이터허브 LINK 자료(공공심야약국·모유수유시설·응급의료기관)
+Facility = Literal[
+    "pharmacy", "toilet", "wifi", "police", "night_pharmacy", "nursing_room", "emergency"
+]
 SlotSource = Literal["explicit", "previous", "default", "inferred"]
 
 

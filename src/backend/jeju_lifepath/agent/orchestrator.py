@@ -569,6 +569,7 @@ class Agent:
             "plan_create": self._plan_create,
             "plan_modify": self._plan_modify,
             "save_trip": self._save_trip,
+            "olle": self._olle,
         }.get(p.intent)
         if handler is None:
             return present.chat(ctx, p, self.policy.version)
@@ -722,6 +723,17 @@ class Agent:
             found, widened = self._search(ctx, p.slots.themes[0], at)
             return present.theme_places(ctx, p, at, found[:5], widened, self.policy.version)
         return present.chat(ctx, p, self.policy.version)
+
+    def _olle(self, p: ParseResult, ctx) -> dict:
+        """올레 코스 안내. 코스 번호를 말했으면 그 코스, 아니면 기준 위치에서 가까운 코스."""
+        said = " ".join(filter(None, [p.slots.place_query, ctx["text"]]))
+        m = re.search(r"(\d+(?:-\d+)?)\s*코스", said)
+        if m:
+            r = ctx["runner"].call("olle_courses", {"course": m.group(1)})
+        else:
+            at = self._point(p, ctx, ask="어디 근처 올레 코스를 찾아 줄까? 지금 위치를 쓰거나 동네 이름을 알려 주렴.")
+            r = ctx["runner"].call("olle_courses", {"near": {"lon": at["lon"], "lat": at["lat"]}})
+        return present.olle(ctx, p, r, self.policy.version)
 
     def _route(self, p: ParseResult, ctx) -> dict:
         origin = self._point(

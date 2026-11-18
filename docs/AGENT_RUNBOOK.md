@@ -26,6 +26,7 @@ cd src/frontend && npm run build && cd ../..
 | 이름 | 쓰임 | 없으면 |
 |---|---|---|
 | `KAKAO_REST_API_KEY` | 서버 쪽 장소·주소 검색 | 장소 검색 도구가 설정 오류로 끝남(걷는 길 비교는 동작) |
+| (키 없음) `scripts/fetch_hub_links.py` | 허브 LINK 자료(심야약국·수유실·응급실·올레) 받기 | 그 기능만 결과 없음 |
 | `LLM_API_KEY` | 요청 해석의 주인(Meta Model API, OpenAI 호환). 앞 대화·화면을 함께 봄 | 규칙 해석 제한 모드(낱말 목록) |
 | `LLM_BASE_URL`, `LLM_MODEL` | 제공자 바꾸기(선택) | `configs/agent_policy.json`의 llm 값 |
 | `AGENT_LLM=off` | LLM 끄기 | — |
@@ -47,6 +48,11 @@ cd src/frontend && npm run build && cd ../..
 | `DELETE /api/agent/conversations/{id}` | 대화 기록 지우기(그 대화의 실행·도구 호출 기록도 함께) |
 
 run_id는 화면이 만든 message_id와 같다.
+
+## 제약사항
+
+- **휠체어 길 안내는 추후 개발 예정이다.** 지금은 통행이 확인된 길만 쓰는 규칙(요구사항 §4.3)인데, 제주 OSM 길 37,955개 중 휠체어 통행 정보가 있는 길은 252개(0.7%)뿐이라 대부분 "확인된 길이 없어 안내할 수 없다"고 답한다. 계단은 피할 수 있다(유모차는 계단을 피한 길로 안내).
+- 공공심야약국·수유실·응급실·올레 시작점은 주소·지점 이름을 카카오 검색으로 그때그때 위치로 바꾼다. 이름이 비슷한 다른 곳이 먼저 나오면 위치가 틀릴 수 있다.
 
 ## 장애 대응
 

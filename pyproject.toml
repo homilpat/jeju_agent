@@ -27,7 +27,10 @@ dev = [
 # Agent 평가(REQUIREMENTS 13.1). 2026-11-18 동작 확인한 버전. 로컬 실행: evals/run_agent_evals.py
 eval = [
     "agentevals==0.0.9",
+    "openevals==0.2.5",  # LLM 채점(2026-11-19 추가)
+    "deepeval==4.3.4",  # 작업 완료·도구 사용 지표(2026-11-19 추가)
 ]
+# promptfoo(프롬프트 공격 검사)는 npm 도구라 여기 넣지 않고 npx promptfoo@0.125.1 로 부른다
 
 # Monorepo layout: src/backend (Python engine/agent), src/frontend (UI, G10).
 # Tests mirror it: tests/backend, tests/frontend.

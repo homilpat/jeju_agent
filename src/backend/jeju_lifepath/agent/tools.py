@@ -30,7 +30,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from jeju_lifepath.agent.models import Policy, ToolError
+from jeju_lifepath.agent.models import Facility, Policy, ToolError
 from jeju_lifepath.schemas import MobilityProfile
 
 LonLat = tuple[float, float]
@@ -62,7 +62,7 @@ class ResolveLocationIn(BaseModel):
 
 class NearbyIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["pharmacy", "toilet", "wifi", "police"]
+    kind: Facility
     at: Point
 
 
@@ -81,7 +81,7 @@ class RouteStopsIn(BaseModel):
     origin: Point
     destination: Point
     mobility: MobilityProfile = MobilityProfile.STANDARD
-    facility: Literal["pharmacy", "toilet", "wifi", "police"] | None = None
+    facility: Facility | None = None
     theme: str | None = Field(default=None, min_length=1, max_length=40)
 
 
@@ -90,8 +90,16 @@ class AreaAccessIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     area: str = Field(min_length=1, max_length=20)  # 읍면동 이름(경계 자료의 이름과 같아야 함)
-    facility: Literal["pharmacy", "toilet", "wifi", "police"]
+    facility: Facility
     mobility: MobilityProfile = MobilityProfile.STANDARD
+
+
+class OlleIn(BaseModel):
+    """올레 코스 안내. course가 있으면 그 코스("7", "7-1"), 없으면 near에서 가까운 코스."""
+
+    model_config = ConfigDict(extra="forbid")
+    course: str | None = Field(default=None, min_length=1, max_length=10)
+    near: Point | None = None
 
 
 class MatrixIn(BaseModel):

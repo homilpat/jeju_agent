@@ -19,6 +19,7 @@ from jeju_lifepath.agent.tools import (
     CompareRoutesIn,
     MatrixIn,
     NearbyIn,
+    OlleIn,
     ResolveLocationIn,
     RouteStopsIn,
     SearchPlacesIn,
@@ -31,6 +32,9 @@ M_PER_DEG_LAT = 111_320  # 위도 1도의 길이(m, 구면 근사)
 PHARMACY_CODE = "PM9"  # 카카오 분류 코드: 약국
 NEARBY_LIMIT = 5  # api/app.py NEARBY_LIMIT과 같음
 TOILET_GEOCODE_MAX = 15  # shortcut: 근거 없는 상한(주소 검색 호출 수 제한), 느리면 조정
+# 허브 주소 자료(심야약국 6·응급의료기관 6·수유시설 85곳)를 한 번에 위치로 바꿀 최대 수.
+# shortcut: 근거 없는 상한(수유시설 한 시 분량이 들어가게), 느리면 줄이기
+ADDR_GEOCODE_MAX = 60
 # 길에 들를 곳 카드 최대 6장(REQUIREMENTS §11.5 근거, §11.1-2)
 CARD_MAX = 6
 # 화장실 주소 -> 위치 바꾸기를 동시에 몇 개 부를지(도구 실행기 ToolRunner 스레드 수 8과 같게, 잠정)
@@ -41,7 +45,11 @@ PUBLIC_SOURCES = {
     "wifi": "공공 와이파이 위치(제주데이터허브)",
     "police": "경찰관서 위치(생활안전지도)",
     "toilet": "공중화장실 정보(공공데이터포털)",
+    "night_pharmacy": "공공심야약국 현황(제주데이터허브)",
+    "nursing_room": "모유수유시설 설치현황(제주데이터허브)",
+    "emergency": "응급의료기관 현황(제주데이터허브)",
 }
+OLLE_SOURCE = "올레코스 현황(제주데이터허브)"
 
 
 @dataclass
@@ -55,6 +63,9 @@ class AgentContext:
     area_city: dict = field(default_factory=dict)  # {읍면동 이름: 시(제주시·서귀포시)}
     toilets: list = field(default_factory=list)
     toilets_in: Callable | None = None
+    # 제주데이터허브 주소 자료 {시설 종류: 화장실과 같은 모양}과 올레 코스(api.app.load_hub_links)
+    addr_facilities: dict = field(default_factory=dict)
+    olle: list = field(default_factory=list)
     nearest: Callable | None = None
     dataset_version: str = "local"
     # 게시 전에 여행 본문을 수동 플래너와 같은 규칙(app.Planner)으로 검사. 어긋나면 예외
@@ -117,42 +128,76 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
             for p in found:
                 p["distance_m"] = p["distance_m"] or round(haversine_m(*at, p["lon"], p["lat"]))
             return {"places": found[:NEARBY_LIMIT], "source": "kakao", "checked_at": _now_iso()}
-        if a.kind == "toilet":
-            region = ctx.kakao.region(*at)
-            if region is None:
-                return {"places": [], "source": "public", "outside": True}
-            cands = ctx.toilets_in(ctx.toilets, region["city"], region["regions"])
-            found = []
-            for t in cands[:TOILET_GEOCODE_MAX]:
-                spot = next((s for s in map(ctx.kakao.address, t["addresses"]) if s), None)
-                if spot:
-                    found.append(
-                        {
-                            "name": t["name"],
-                            "address": t["addresses"][0],
-                            "lon": spot[0],
-                            "lat": spot[1],
-                            "distance_m": round(haversine_m(*at, *spot)),
-                            "notes": [
-                                n
-                                for n, ok in (
-                                    ("장애인 화장실", t["accessible"]),
-                                    ("기저귀 교환대", t["diaper"]),
-                                    ("비상벨", t["bell"]),
-                                )
-                                if ok
-                            ],
-                            "hours": t["hours"],
-                        }
-                    )
-            found.sort(key=lambda p: p["distance_m"])
-            return {
-                "places": found[:NEARBY_LIMIT],
-                "source": "public",
-                "partial": len(cands) > TOILET_GEOCODE_MAX,
-            }
+        if a.kind == "toilet" or a.kind in ctx.addr_facilities:
+            return nearby_by_address(a.kind, at)
         points = ctx.nearby.get(a.kind, [])
         return {"places": ctx.nearest(points, a.at.lat, a.at.lon), "source": "public"}
+
+    def geocode(rows: list[dict], tool: str) -> list[tuple[dict, tuple | None]]:
+        """주소 -> 위치(카카오 주소 검색, 이번 계산 동안만. 저장 안 함). 도구 시간 안에 못 바꾼 곳은 None."""
+        until = time.monotonic() + ctx.policy.timeout_for(tool)
+
+        def locate(x):
+            if time.monotonic() >= until:
+                return x, None
+            return x, next((s for s in map(ctx.kakao.address, x["addresses"]) if s), None)
+
+        with ThreadPoolExecutor(max_workers=GEOCODE_WORKERS) as pool:
+            return list(pool.map(locate, rows))
+
+    def nearby_by_address(kind: str, at: tuple) -> dict:
+        """주소만 있는 공공 자료(화장실, 허브 심야약국·수유시설·응급의료기관) 중 가까운 곳."""
+        region = ctx.kakao.region(*at)
+        if region is None:
+            return {"places": [], "source": "public", "outside": True}
+        if kind == "toilet":
+            cands, cap = ctx.toilets_in(ctx.toilets, region["city"], region["regions"]), TOILET_GEOCODE_MAX
+        else:
+            rows, cap = ctx.addr_facilities.get(kind, []), ADDR_GEOCODE_MAX
+            # 섬 전체 몇 곳뿐인 자료(심야약국·응급실)는 다 보고, 많으면 같은 시만 본다
+            cands = rows if len(rows) <= cap else [
+                x for x in rows if any(region["city"] in ad for ad in x["addresses"])]
+        found = []
+        for x, spot in geocode(cands[:cap], "find_nearby_facilities"):
+            if spot is None:
+                continue
+            notes = x.get("notes") or [n for n, ok in (
+                ("장애인 화장실", x.get("accessible")), ("기저귀 교환대", x.get("diaper")),
+                ("비상벨", x.get("bell"))) if ok]
+            found.append({"name": x["name"], "address": x["addresses"][0], "lon": spot[0], "lat": spot[1],
+                          "distance_m": round(haversine_m(*at, *spot)), "notes": notes,
+                          "hours": x.get("hours", "")})
+        found.sort(key=lambda p: p["distance_m"])
+        return {"places": found[:NEARBY_LIMIT], "source": "public", "partial": len(cands) > cap}
+
+    def olle_courses(a: OlleIn) -> dict:
+        """올레 코스(허브 1236) + 시작·끝 지점 위치(카카오 장소 검색, 이번 계산 동안만)."""
+        def key(text: str) -> str:
+            return text.replace("코스", "").replace(" ", "")
+
+        if a.course:
+            picked = [c for c in ctx.olle if key(c["course"]) == key(a.course)]
+        else:
+            picked = list(ctx.olle)
+
+        def spot(name: str | None):
+            hits = ctx.kakao.keyword(name) if name else []
+            return (hits[0]["lon"], hits[0]["lat"]) if hits else None
+
+        with ThreadPoolExecutor(max_workers=GEOCODE_WORKERS) as pool:
+            starts = list(pool.map(lambda c: spot(c["start"]), picked))
+        out = []
+        for c, st in zip(picked, starts, strict=True):
+            row = {**c, "start_at": st, "end_at": None, "distance_m": None}
+            if a.near and st:
+                row["distance_m"] = round(haversine_m(a.near.lon, a.near.lat, *st))
+            out.append(row)
+        if not a.course:  # 가까운 코스 3개(시작점 기준)
+            out = sorted((c for c in out if c["distance_m"] is not None), key=lambda c: c["distance_m"])[:3]
+        else:
+            for c in out:
+                c["end_at"] = spot(c["end"]) if c["end"] and c["end"] != c["start"] else None
+        return {"courses": out, "source": "public"}
 
     def compare_routes(a: CompareRoutesIn) -> dict:
         from jeju_lifepath.presentation.route import render_plan  # noqa: PLC0415
@@ -166,7 +211,7 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
         shown = render_plan(plan)
         return {**shown, "found": any(r["found"] for r in shown["routes"])}
 
-    def public_toilets(tool: str, **where) -> tuple[list[dict], bool, str, int]:
+    def public_toilets(rows: list[dict], tool: str, **where) -> tuple[list[dict], bool, str, int]:
         """공중화장실 공공데이터(주소만 있음)를 이번 계산 동안만 카카오 주소 검색으로 위치로 바꾼다(저장 안 함).
         범위에 걸친 시(제주시·서귀포시)의 화장실만 바꾸고, 범위(사각형·원) 밖은 뺀다.
         반환 (장소들, 시간 안에 다 못 바꿈, 출처, 주소로 위치를 못 찾은 수)."""
@@ -184,7 +229,7 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
         # 범위에 걸친 읍면동의 시(경계 자료가 없으면 두 시 모두)
         cities = {ctx.area_city[n] for n, g in ctx.areas.items() if g.intersects(reach)} or {
             "제주시", "서귀포시"}
-        cands = [t for t in ctx.toilets if any(c in a for c in cities for a in t["addresses"])]
+        cands = [t for t in rows if any(c in a for c in cities for a in t["addresses"])]
         until = time.monotonic() + ctx.policy.timeout_for(tool)
 
         def locate(t):
@@ -207,7 +252,10 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
     def facility_points(kind: str | None, theme: str | None, tool: str, **where):
         """시설 후보 (장소들, 잘림, 출처, 위치 못 찾은 수). 공공데이터가 있으면 그것, 없으면 카카오(최대 45곳)."""
         if kind == "toilet" and ctx.toilets:
-            return public_toilets(tool, **where)
+            return public_toilets(ctx.toilets, tool, **where)
+        if kind in ctx.addr_facilities or kind in ("night_pharmacy", "nursing_room", "emergency"):
+            rows = ctx.addr_facilities.get(kind, [])
+            return public_toilets(rows, tool, **where) if rows else ([], False, "public", 0)
         if kind in ("wifi", "police"):
             pts = [{**p, "ref": f"{kind}:{i}"} for i, p in enumerate(ctx.nearby.get(kind, []))]
             if "rect" in where:
@@ -337,9 +385,15 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
             ),
             ToolSpec(
                 "find_nearby_facilities",
-                "약국·화장실·와이파이·경찰관서 가까운 곳",
+                "약국·화장실·와이파이·경찰관서·심야약국·수유실·응급실 가까운 곳",
                 NearbyIn,
                 find_nearby_facilities,
+            ),
+            ToolSpec(
+                "olle_courses",
+                "제주 올레 코스 안내(코스 번호 또는 가까운 코스)",
+                OlleIn,
+                olle_courses,
             ),
             ToolSpec(
                 "compare_routes",

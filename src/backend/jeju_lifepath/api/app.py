@@ -48,6 +48,7 @@ OSM_FILE = ROOT / "data" / "private" / "osm" / "jeju_highways.json"
 PRIVATE_DIR = ROOT / "data" / "private"
 ENV_FILE = ROOT / ".env"
 TOILET_FILE = PRIVATE_DIR / "공중화장실정보_제주특별자치도.csv"
+HUB_LINK_DIR = PRIVATE_DIR / "hub_link"  # scripts/fetch_hub_links.py
 CCTV_FILES = [PRIVATE_DIR / "CCTV정보_제주특별자치도.csv", PRIVATE_DIR / "CCTV정보.csv"]
 # 제주도 전체를 덮는 사각형(경도·위도). 경로 요청 좌표가 이 밖이면 거절한다
 # (kakao.js 검색 범위와 같음)
@@ -217,6 +218,41 @@ def load_toilets(path: Path) -> list[dict]:
     return out
 
 
+def _csv_rows(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return list(csv.DictReader(io.StringIO(path.read_bytes().decode("cp949"))))
+
+
+def load_hub_links(folder: Path) -> tuple[dict[str, list[dict]], list[dict]]:
+    """제주데이터허브 LINK 자료(scripts/fetch_hub_links.py가 받은 CSV). 위경도가 없어 주소만 쓴다.
+    반환 ({시설 종류: 화장실과 같은 모양의 목록}, 올레 코스 목록). 파일이 없으면 빈 목록."""
+    clean = lambda s: (s or "").strip().replace("?", "-")  # noqa: E731 - 원자료의 깨진 긴 줄표(–)
+    facilities = {
+        "night_pharmacy": [
+            {"name": clean(r["약국명"]), "addresses": [clean(r["소재지"])],
+             "notes": [f"밤 {clean(r['운영종료시간'])}까지", clean(r["운영요일"])]}
+            for r in _csv_rows(folder / "night_pharmacy.csv")
+        ],
+        "nursing_room": [
+            {"name": clean(r["설치장소(기관)"]), "addresses": [clean(r["주소"])],
+             "notes": [clean(r["용도"])]}
+            for r in _csv_rows(folder / "nursing_room.csv")
+        ],
+        "emergency": [
+            {"name": clean(r["의료기관"]), "addresses": [clean(r["소재지"])],
+             "notes": [clean(r["구분"]), f"전화 {clean(r['전화번호'])}"]}
+            for r in _csv_rows(folder / "emergency.csv")
+        ],
+    }
+    olle = []
+    for r in _csv_rows(folder / "olle.csv"):
+        start, _, end = clean(r["시종점정보"]).partition("-")
+        olle.append({"course": clean(r["코스별"]), "name": clean(r["코스명"]), "length": clean(r["거리"]),
+                     "time": clean(r["소요시간정보"]), "start": start, "end": end or None})
+    return {k: [x for x in v if x["name"] and x["addresses"][0]] for k, v in facilities.items()}, olle
+
+
 # 주소 속 읍·면·동 이름(예: "애월읍", "삼양1동"). 도로명 주소만 있는 동 지역 화장실에는 없다
 REGION_WORD = re.compile(r"\S+[읍면동](?=\s|$)")
 
@@ -238,6 +274,7 @@ def toilets_in(toilets: list[dict], city: str, regions: list[str]) -> list[dict]
 
 
 NEARBY_DATASETS = {"wifi": "hub-wifi.geojson", "police": "safemap-police.geojson"}
+BRACKET_NO = re.compile(r"\s*\[\d+\]")
 NEARBY_LIMIT = 5  # shortcut: 근거 없는 개수(한 화면에 보기 좋은 정도), 시연 후 조정
 
 
@@ -248,10 +285,11 @@ def load_nearby(processed_dir: Path) -> dict[str, list[dict]]:
         feats = json.loads(path.read_text(encoding="utf-8"))["features"] if path.exists() else []
         out[kind] = [
             {
-                # 원자료 이름의 밑줄("전기차충전소_제주시청")은 화면에서 띄어쓰기로
-                "name": (f["properties"].get("place") or f["properties"].get("name") or "").replace(
-                    "_", " "
-                ),
+                # 원자료 이름의 밑줄("전기차충전소_제주시청")은 화면에서 띄어쓰기로, 정류소 번호
+                # ("[405000284]")처럼 대괄호 속 숫자는 내부 번호라 화면에 보이지 않게 뺀다
+                "name": BRACKET_NO.sub(
+                    "", (f["properties"].get("place") or f["properties"].get("name") or "").replace("_", " ")
+                ).strip(),
                 "detail": f["properties"].get("category") or f["properties"].get("kind") or "",
                 "lon": f["geometry"]["coordinates"][0],
                 "lat": f["geometry"]["coordinates"][1],
@@ -454,6 +492,7 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     *,
     crime_fetch: Callable[..., bytes | None] = fetch_crime_png,
     toilet_file: Path = TOILET_FILE,
+    hub_link_dir: Path = HUB_LINK_DIR,
     kakao: object | None = None,
     llm: object | None = "env",
     policy: Policy | None = None,
@@ -464,6 +503,7 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     store.purge_older_than(policy.trace_retention_days)
     public_points = load_public_points(processed_dir)
     toilets = load_toilets(toilet_file)
+    addr_facilities, olle = load_hub_links(hub_link_dir)
     nearby = load_nearby(processed_dir)
     areas, area_city = load_areas(processed_dir)
     app = FastAPI(title="JEJU LifePath", docs_url=None, redoc_url=None, openapi_url=None)
@@ -682,6 +722,8 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
             area_city=area_city,
             toilets=toilets,
             toilets_in=toilets_in,
+            addr_facilities=addr_facilities,
+            olle=olle,
             nearest=nearest,
             trip_validator=lambda body: planner_body(Planner.model_validate(body), public_points),
         ),

@@ -95,7 +95,10 @@ def theme_keys(word: str) -> list[str]:
     if word in THEME_GROUPS:
         return list(THEME_GROUPS[word])
     return [THEMES[word]] if word in THEMES else []
-FACILITIES = {
+FACILITIES = {  # 긴 말을 먼저 본다("심야약국"이 "약국"으로 잡히지 않게)
+    "심야약국": "night_pharmacy",
+    "수유실": "nursing_room",
+    "응급실": "emergency",
     "약국": "pharmacy",
     "화장실": "toilet",
     "와이파이": "wifi",
@@ -394,6 +397,8 @@ def parse_rules(text: str, now: datetime, has_trip: bool = False) -> ParseResult
         intent = "plan_create"
     elif slots.destination_text and re.search(ROUTE_WORDS + "|까지", raw):
         intent = "route"
+    elif "올레" in raw:
+        intent = "olle"
     elif slots.facility:
         intent = "guide"
     elif named := _place_before(raw, r"(?:은|는|이|가)?\s*(?:설명|어떤\s*곳|뭐야)"):

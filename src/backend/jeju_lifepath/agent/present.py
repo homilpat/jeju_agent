@@ -8,7 +8,7 @@ import statistics
 from datetime import UTC, datetime
 
 from jeju_lifepath.agent.kakao import SOURCE as KAKAO_SOURCE
-from jeju_lifepath.agent.services import PUBLIC_SOURCES
+from jeju_lifepath.agent.services import OLLE_SOURCE, PUBLIC_SOURCES
 from jeju_lifepath.presentation.route import PREF_TEXT
 from jeju_lifepath.schemas import MobilityProfile, RoutePreference
 
@@ -17,6 +17,9 @@ FACILITY_WORD = {
     "toilet": "화장실",
     "wifi": "공공 와이파이",
     "police": "경찰관서",
+    "night_pharmacy": "공공심야약국",
+    "nursing_room": "수유실",
+    "emergency": "응급실",
 }
 MOBILITY_WORD = {MobilityProfile.STROLLER: "유모차", MobilityProfile.WHEELCHAIR: "휠체어"}
 TOOL_WORD = {
@@ -24,6 +27,7 @@ TOOL_WORD = {
     "resolve_location": "위치 찾기",
     "find_nearby_facilities": "근처 시설 찾기",
     "compare_routes": "걷는 길 계산",
+    "olle_courses": "올레 코스 찾기",
     "get_travel_matrix": "걷는 거리 계산",
     "find_route_stops": "가는 길에 들를 곳 찾기",
     "analyze_area_access": "지역 시설 거리 계산",
@@ -361,6 +365,10 @@ def facilities(ctx, p, at, r, version) -> dict:
     missing = ["거리는 곧게 잰 거리란다."]
     if p.slots.facility == "pharmacy":
         missing.append(HOURS_UNVERIFIED)
+    if p.slots.facility == "night_pharmacy":
+        missing.append("운영 시간은 바뀔 수 있단다. 가기 전에 전화로 확인해 보렴.")
+    if p.slots.facility == "emergency":
+        missing.append("많이 아프거나 위급하면 걸어가지 말고 바로 119에 전화하렴.")
     if r.get("partial"):
         missing.append("후보가 많아서 일부만 살펴봤단다.")
     return _from(
@@ -377,6 +385,37 @@ def facilities(ctx, p, at, r, version) -> dict:
             if p.slots.facility == "pharmacy"
             else []
         ),
+    )
+
+
+def olle(ctx, p, r, version) -> dict:
+    """올레 코스 안내. 코스를 말했으면 그 코스, 아니면 가까운 코스(시작점 기준)."""
+    courses = r["courses"]
+    if not courses:
+        return _from(ctx, "ok", "그런 올레 코스는 찾지 못했구나. 1코스부터 21코스까지, 1-1·7-1처럼 말해 주렴.",
+                     version, evidence=_evidence(OLLE_SOURCE))
+
+    def pins(c):
+        out = []
+        for label, name, spot in (("시작", c["start"], c["start_at"]), ("끝", c["end"], c["end_at"])):
+            if spot and name:
+                out.append({"name": f"올레 {c['course']} {label}: {name}",
+                            "detail": f"{c['length']} · {c['time']}", "address": "", "url": None,
+                            "lon": spot[0], "lat": spot[1]})
+        return out
+
+    if len(courses) == 1 and courses[0]["distance_m"] is None:
+        c = courses[0]
+        ends = f"{c['start']}에서 시작해서 {c['end']}에서 끝난단다." if c["end"] else f"{c['start']}을(를) 돈단다."
+        msg = f"올레 {c['course']}({c['name']})는 {c['length']}, {c['time']} 걸리는 길이란다. {ends}"
+        places = pins(c)
+    else:
+        msg = f"가까운 올레 코스 {len(courses)}개란다. 시작점까지 곧게 잰 거리야."
+        places = [{**pin, "detail": f"{pin['detail']} · 시작점까지 약 {_distance(c['distance_m'])}"}
+                  for c in courses for pin in pins(c)[:1]]
+    return _from(
+        ctx, "ok", msg, version, places=places, evidence=_evidence(OLLE_SOURCE),
+        missing_data=["걸리는 시간은 걷는 사람마다 다르단다.", "지도 위치는 시작·끝 지점 이름으로 찾은 거란다."],
     )
 
 

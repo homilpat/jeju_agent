@@ -1423,3 +1423,76 @@ def test_new_conversation_not_created_when_run_record_is_gone(world):
     assert not world["store"].save_conversation(world["uid"], conv, {"history": []}, 0,
                                                 run_id="gone")
     assert world["store"].get_conversation(world["uid"], conv) is None
+
+
+# 제주데이터허브 LINK 자료: 공공심야약국·모유수유시설·응급의료기관·올레코스 (2026-11-19) ------
+def _csv(path, header, rows):
+    path.write_bytes(("\n".join([header, *rows]) + "\n").encode("cp949"))
+
+
+def test_load_hub_links_reads_the_four_files(tmp_path):
+    from jeju_lifepath.api.app import load_hub_links
+
+    _csv(tmp_path / "night_pharmacy.csv", "행정시,읍면동,약국명,소재지,운영종료시간,운영요일,데이터기준일자",
+         ["제주시,격자동,별빛약국,제주시 격자동,23:00,월+화,2026-09-05"])
+    _csv(tmp_path / "nursing_room.csv", "지역구분,설치장소(기관),주소,용도,데이터기준일자",
+         ["제주시,격자 주민센터,제주시 격자마을,가족수유실,2026-01-31"])
+    _csv(tmp_path / "emergency.csv", "구분,의료기관,소재지,전화번호,데이터기준일자",
+         ["지역응급의료센터,격자병원,제주시 격자동,064-000-0000,2025-12-31"])
+    _csv(tmp_path / "olle.csv", "코스별,코스명,거리,소요시간정보,시종점정보,데이터기준일자",
+         ["7코스,서귀포?월평,17.7km,5~6시간,한라공원-격자미술관,2026-07-31"])
+    fac, olle = load_hub_links(tmp_path)
+    assert fac["night_pharmacy"][0]["notes"][0] == "밤 23:00까지"
+    assert fac["emergency"][0]["notes"] == ["지역응급의료센터", "전화 064-000-0000"]
+    assert olle == [{"course": "7코스", "name": "서귀포-월평", "length": "17.7km", "time": "5~6시간",
+                     "start": "한라공원", "end": "격자미술관"}]  # 깨진 줄표(?)는 -로
+    assert load_hub_links(tmp_path / "없음") == ({"night_pharmacy": [], "nursing_room": [], "emergency": []}, [])
+
+
+def _hub_world(world):
+    world["ctx"].addr_facilities = {
+        "night_pharmacy": [{"name": "별빛약국", "addresses": ["제주시 격자동"], "notes": ["밤 23:00까지"]},
+                           {"name": "먼약국", "addresses": ["제주시 격자마을"], "notes": ["밤 22:00까지"]}],
+        "nursing_room": [],
+        "emergency": [{"name": "격자병원", "addresses": ["제주시 격자동"], "notes": ["전화 064-000-0000"]}],
+    }
+    world["ctx"].olle = [
+        {"course": "7코스", "name": "서귀포-월평", "length": "17.7km", "time": "5~6시간",
+         "start": "한라공원", "end": "격자미술관"},
+        {"course": "1코스", "name": "시흥-광치기", "length": "15.1km", "time": "4~5시간",
+         "start": "계단빵집", "end": "격자해변"},  # 가짜 검색이 찾는 이름
+    ]
+
+
+def test_night_pharmacy_and_emergency_from_hub(world):
+    _hub_world(world)
+    r = say(world, "근처 심야약국 어디야", loc=LOC)
+    assert r["status"] == "ok" and [p["name"] for p in r["places"]] == ["별빛약국", "먼약국"]  # 가까운 순
+    assert "밤 23:00까지" in r["places"][0]["detail"]
+    assert any("제주데이터허브" in e["source"] for e in r["evidence"])
+    r = say(world, "응급실 어디야", loc=LOC)
+    assert r["places"][0]["name"] == "격자병원" and any("119" in m for m in r["missing_data"])
+    for text in [r["message"], *r["missing_data"], *(p["detail"] for p in r["places"])]:
+        assert_user_text(text)
+
+
+def test_olle_course_and_nearest_courses(world):
+    _hub_world(world)
+    r = say(world, "올레 7코스 알려줘")
+    assert r["status"] == "ok" and "17.7km" in r["message"] and "한라공원에서 시작" in r["message"]
+    assert [p["name"].split(":")[0] for p in r["places"]] == ["올레 7코스 시작", "올레 7코스 끝"]
+    r = say(world, "근처 올레길 어디야", loc=LOC)
+    assert r["status"] == "ok" and len(r["places"]) == 2 and "시작점까지" in r["places"][0]["detail"]
+    for text in [r["message"], *(p["name"] + p["detail"] for p in r["places"])]:
+        assert_user_text(text)
+    assert "olle_courses" in tools_called(world["agent"])
+
+
+def test_wifi_names_hide_stop_numbers(tmp_path):
+    from jeju_lifepath.api.app import load_nearby
+
+    (tmp_path / "hub-wifi.geojson").write_text(json.dumps({"features": [{
+        "properties": {"place": "버스정류소_동광양 [405000284] 동광양[북]", "category": "버스"},
+        "geometry": {"coordinates": [126.5, 33.5]}}]}), encoding="utf-8")
+    name = load_nearby(tmp_path)["wifi"][0]["name"]
+    assert name == "버스정류소 동광양 동광양[북]" and "405000284" not in name
