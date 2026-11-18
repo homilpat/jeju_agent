@@ -570,6 +570,7 @@ class Agent:
             "plan_modify": self._plan_modify,
             "save_trip": self._save_trip,
             "olle": self._olle,
+            "barrier_free": self._barrier_free,
         }.get(p.intent)
         if handler is None:
             return present.chat(ctx, p, self.policy.version)
@@ -723,6 +724,15 @@ class Agent:
             found, widened = self._search(ctx, p.slots.themes[0], at)
             return present.theme_places(ctx, p, at, found[:5], widened, self.policy.version)
         return present.chat(ctx, p, self.policy.version)
+
+    def _barrier_free(self, p: ParseResult, ctx) -> dict:
+        """무장애 여행지. 장소 이름을 말했으면 그곳 상세, 아니면 기준 위치에서 가까운 곳."""
+        if p.slots.place_query:
+            r = ctx["runner"].call("barrier_free_places", {"name": p.slots.place_query})
+            return present.barrier_free(ctx, p, None, r, self.policy.version)
+        at = self._point(p, ctx, ask="어디 근처를 찾아 줄까? 지금 위치를 쓰거나 동네 이름을 알려 주렴.")
+        r = ctx["runner"].call("barrier_free_places", {"near": {"lon": at["lon"], "lat": at["lat"]}})
+        return present.barrier_free(ctx, p, at, r, self.policy.version)
 
     def _olle(self, p: ParseResult, ctx) -> dict:
         """올레 코스 안내. 코스 번호를 말했으면 그 코스, 아니면 기준 위치에서 가까운 코스."""

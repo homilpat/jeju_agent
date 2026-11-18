@@ -49,6 +49,7 @@ PRIVATE_DIR = ROOT / "data" / "private"
 ENV_FILE = ROOT / ".env"
 TOILET_FILE = PRIVATE_DIR / "공중화장실정보_제주특별자치도.csv"
 HUB_LINK_DIR = PRIVATE_DIR / "hub_link"  # scripts/fetch_hub_links.py
+BARRIER_FREE_FILE = PRIVATE_DIR / "barrier_free.json"  # scripts/build_barrier_free.py
 CCTV_FILES = [PRIVATE_DIR / "CCTV정보_제주특별자치도.csv", PRIVATE_DIR / "CCTV정보.csv"]
 # 제주도 전체를 덮는 사각형(경도·위도). 경로 요청 좌표가 이 밖이면 거절한다
 # (kakao.js 검색 범위와 같음)
@@ -493,6 +494,7 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     crime_fetch: Callable[..., bytes | None] = fetch_crime_png,
     toilet_file: Path = TOILET_FILE,
     hub_link_dir: Path = HUB_LINK_DIR,
+    barrier_free_file: Path = BARRIER_FREE_FILE,
     kakao: object | None = None,
     llm: object | None = "env",
     policy: Policy | None = None,
@@ -504,6 +506,9 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     public_points = load_public_points(processed_dir)
     toilets = load_toilets(toilet_file)
     addr_facilities, olle = load_hub_links(hub_link_dir)
+    barrier_free = (
+        json.loads(barrier_free_file.read_text(encoding="utf-8")) if barrier_free_file.exists() else []
+    )
     nearby = load_nearby(processed_dir)
     areas, area_city = load_areas(processed_dir)
     app = FastAPI(title="JEJU LifePath", docs_url=None, redoc_url=None, openapi_url=None)
@@ -724,6 +729,7 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
             toilets_in=toilets_in,
             addr_facilities=addr_facilities,
             olle=olle,
+            barrier_free=barrier_free,
             nearest=nearest,
             trip_validator=lambda body: planner_body(Planner.model_validate(body), public_points),
         ),

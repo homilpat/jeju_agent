@@ -4,11 +4,12 @@ warnings, missing_data, claims의 text)은 모두 한국어 문장이다. 상태
 
 from __future__ import annotations
 
+import re
 import statistics
 from datetime import UTC, datetime
 
 from jeju_lifepath.agent.kakao import SOURCE as KAKAO_SOURCE
-from jeju_lifepath.agent.services import OLLE_SOURCE, PUBLIC_SOURCES
+from jeju_lifepath.agent.services import BARRIER_FREE_SOURCE, OLLE_SOURCE, PUBLIC_SOURCES
 from jeju_lifepath.presentation.route import PREF_TEXT
 from jeju_lifepath.schemas import MobilityProfile, RoutePreference
 
@@ -28,6 +29,7 @@ TOOL_WORD = {
     "find_nearby_facilities": "근처 시설 찾기",
     "compare_routes": "걷는 길 계산",
     "olle_courses": "올레 코스 찾기",
+    "barrier_free_places": "무장애 여행지 찾기",
     "get_travel_matrix": "걷는 거리 계산",
     "find_route_stops": "가는 길에 들를 곳 찾기",
     "analyze_area_access": "지역 시설 거리 계산",
@@ -386,6 +388,66 @@ def facilities(ctx, p, at, r, version) -> dict:
             else []
         ),
     )
+
+
+YES = {"O", "Y", "가능", "있음", "○", "●"}
+FIRST_SENTENCE = re.compile(r"(?<=[다요])\.\s*")
+
+
+def _access_bits(x: dict) -> list[str]:
+    """한 장소의 접근성 요약 낱말들(조사 자료에 있는 것만)."""
+    doc = x.get("doc") or {}
+    bits = []
+    if doc.get("disabled_toilet") == "있음" or x.get("toilet_points"):
+        bits.append("장애인 화장실 있음")
+    if doc.get("disabled_parking") == "있음":
+        bits.append("장애인 주차장 있음")
+    if "휠체어(수동)" in doc.get("audience", []):
+        bits.append("휠체어 추천" + (" (보호자와 함께)" if "휠체어(수동)" in doc.get("companion", []) else ""))
+    if x.get("barrier_points"):
+        bits.append(f"계단·경사 주의 지점 {x['barrier_points']}곳")
+    return bits
+
+
+def barrier_free(ctx, p, at, r, version) -> dict:
+    """무장애 여행지: 가까운 곳 목록 또는 한 곳 상세(접근성 조사 자료)."""
+    found = r["places"]
+    evidence = _evidence(BARRIER_FREE_SOURCE)
+    dated = "무장애 조사는 2019~2021년 자료라 지금과 다를 수 있단다. 가기 전에 한 번 더 확인해 보렴."
+    if not found:
+        what = f"'{p.slots.place_query}'의 " if p.slots.place_query else ""
+        return _from(ctx, "ok", f"{what}무장애 여행 정보는 찾지 못했구나.", version, evidence=evidence)
+    if not r["detail"]:
+        places = [{"name": x["name"], "detail": " · ".join([f"약 {_distance(x['distance_m'])}", *_access_bits(x)]),
+                   "address": x.get("address") or "", "url": None, "lat": x["lat"], "lon": x["lon"]}
+                  for x in found]
+        return _from(ctx, "ok", f"{at['label']}에서 가까운 무장애 여행지 {len(places)}곳이란다.", version,
+                     places=places, evidence=evidence, missing_data=["거리는 곧게 잰 거리란다.", dated])
+    x = found[0]
+    doc = x.get("doc") or {}
+    first = FIRST_SENTENCE.split(doc.get("summary") or "")[0].strip()
+    bits = _access_bits(x)
+    msg = f"{x['name']}의 무장애 여행 정보란다." + (f" {first}." if first else "")
+    if bits:
+        msg += " " + ", ".join(bits) + "."
+    places = [{"name": x["name"], "detail": doc.get("course") or "", "address": x.get("address") or "",
+               "url": None, "lat": x["lat"], "lon": x["lon"]}]
+    # 설명이 있는 지점만 카드로(빈 카드가 줄지어 보이지 않게), 많으면 앞의 8곳. shortcut: 8은 화면 보기 좋은 정도
+    places += [{"name": pt["label"] or "지점", "detail": pt["info"], "address": "", "url": None,
+                "lat": pt["lat"], "lon": pt["lon"]} for pt in x.get("points", []) if pt["info"]][:8]
+    friendly = [f"{n['name']}({n['kind']})" for n in x.get("nearby", []) if n["wheelchair"] in YES][:4]
+    notes = list(doc.get("notes", []))[:3]
+    if doc.get("hours"):
+        notes.append(f"관람시간 {doc['hours']}")
+    if friendly:
+        notes.append("근처에 휠체어로 들어갈 수 있는 곳: " + ", ".join(friendly))
+    extra = {}
+    if x.get("track"):  # 조사자가 실제로 걸은 무장애 코스(GPS)를 지도에 선으로
+        extra["track"] = x["track"]
+        notes.insert(0, "지도의 초록 선은 조사자가 실제로 걸어 본 무장애 코스란다."
+                     + (f" 오르내림은 약 {x['climb_m']}m야." if x.get("climb_m") else ""))
+    return _from(ctx, "ok", msg, version, places=places, evidence=evidence,
+                 missing_data=[*notes, dated], **extra)
 
 
 def olle(ctx, p, r, version) -> dict:

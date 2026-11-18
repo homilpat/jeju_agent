@@ -30,6 +30,10 @@ eval = [
     "openevals==0.2.5",  # LLM 채점(2026-11-19 추가)
     "deepeval==4.3.4",  # 작업 완료·도구 사용 지표(2026-11-19 추가)
 ]
+# 자료 만들기 스크립트(scripts/build_barrier_free.py)의 한글 문서 읽기. 앱 실행에는 필요 없음
+data = [
+    "olefile==0.47",
+]
 # promptfoo(프롬프트 공격 검사)는 npm 도구라 여기 넣지 않고 npx promptfoo@0.125.1 로 부른다
 
 # Monorepo layout: src/backend (Python engine/agent), src/frontend (UI, G10).

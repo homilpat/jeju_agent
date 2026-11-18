@@ -136,6 +136,8 @@ def run_case(case: dict, llm, tmp: Path) -> dict:
         hard["unverified_claim"] = any(
             exp["unverified_claim"] in c["text"] and not c["verified"] for c in resp["claims"]
         )
+    if "missing_contains" in exp:  # 꼭 들어가야 하는 안내(예: 응급실 답의 119)
+        hard["missing_contains"] = any(exp["missing_contains"] in m for m in resp.get("missing_data", []))
     if "min_attempts" in exp:
         hard["min_attempts"] = len(trace) >= exp["min_attempts"]
     return {

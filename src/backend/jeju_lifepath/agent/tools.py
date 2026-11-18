@@ -102,6 +102,14 @@ class OlleIn(BaseModel):
     near: Point | None = None
 
 
+class BarrierFreeIn(BaseModel):
+    """무장애 여행지. name이 있으면 그 장소의 상세, 없으면 near에서 가까운 곳."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=40)
+    near: Point | None = None
+
+
 class MatrixIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source: Point

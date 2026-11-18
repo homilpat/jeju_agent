@@ -1496,3 +1496,148 @@ def test_wifi_names_hide_stop_numbers(tmp_path):
         "geometry": {"coordinates": [126.5, 33.5]}}]}), encoding="utf-8")
     name = load_nearby(tmp_path)["wifi"][0]["name"]
     assert name == "버스정류소 동광양 동광양[북]" and "405000284" not in name
+
+
+# 무장애여행정보 (2026-11-19) ---------------------------------------------------------
+DOC = """하모해수욕장
+개요
+올레길 10코스가 지나가는 길로 산책하기 좋은 곳이다. 조망이 좋다.
+주소
+제주 서귀포시 대정읍 하모리 276
+주차장
+장애인 주차장 유무
+장애인 주차 대수
+위치
+없음
+-
+화장실
+장애인 화장실
+구분
+위치
+있음
+추천코스
+1. 주차장 → 2. 산책로
+휴무일
+연중무휴
+추천 대상
+휠체어 이용인(수동)
+●
+동행인 / 보호자 동반 추천
+휠체어 이용인(전동)
+●
+시니어
+●
+산책로 시작점을 지나 좌측으로 진행하면 각도 10~11도, 5m 정도의 내리막 구간이 있다. 전망대는 계단이 2칸 있으므로 이용하기 어렵다.
+1. 주차장 → 2. 산책로 → 3. 전망대까지 이어지는 길이며 경사가 조금 있는 코스 순서 줄이다"""
+
+
+def test_parse_barrier_free_doc():
+    from jeju_lifepath.data.barrier_free import parse_doc
+
+    d = parse_doc(DOC)
+    assert d["summary"].startswith("올레길 10코스") and d["address"] == "제주 서귀포시 대정읍 하모리 276"
+    assert d["disabled_parking"] == "없음" and d["disabled_toilet"] == "있음"
+    assert d["audience"] == ["휠체어(수동)", "휠체어(전동)", "어르신"] and d["companion"] == ["휠체어(수동)"]
+    assert d["closed"] == "연중무휴" and d["course"] == "1. 주차장 → 2. 산책로"
+    assert any("10~11도" in n for n in d["notes"]) and not any("→" in n for n in d["notes"])
+
+
+def test_build_barrier_free_joins_sources(tmp_path):
+    from jeju_lifepath.data.barrier_free import build
+
+    hub, portal, docs = tmp_path / "hub", tmp_path / "portal", tmp_path / "docs"
+    hub.mkdir(); portal.mkdir(); docs.mkdir()
+    (hub / "858_무장애여행정보.csv").write_text("장소명,주소,위도,경도\n한림공원,제주시 한림읍,33.38,126.24\n",
+                                           encoding="utf-8")
+    (portal / "제주특별자치도_무장애여행정보_1.한림공원_20190910.csv").write_text(
+        "위도,경도,장소명칭,장소상세정보,무장애관광정보\n33.381,126.241,입구,,접근성 정보 있음 (계단 혹은 경사 있음)\n"
+        "33.382,126.242,화장실,,장애인화장실\n", encoding="utf-8")
+    (hub / "1099_제주특별자치도_하모해수욕장_무장애여행위치정보.csv").write_text(
+        "순서,위도,경도,구분,설명\n1,33.20,126.25,주차장,공터\n", encoding="utf-8")
+    (docs / "1200_제주특별자치도_하모해수욕장_무장애여행일반정보.hwp").write_bytes(b"x")
+    places = build(hub, portal, docs, lambda _f: DOC)
+    by = {p["name"]: p for p in places}
+    assert by["한림공원"]["barrier_points"] == 1 and by["한림공원"]["toilet_points"] == 1
+    assert by["하모해수욕장"]["lat"] == 33.20 and by["하모해수욕장"]["doc"]["disabled_toilet"] == "있음"
+
+
+def _bf_world(world):
+    from jeju_lifepath.data.barrier_free import parse_doc
+
+    world["ctx"].barrier_free = [
+        {"name": "격자공원", "lat": CENTER["lat"] + 0.001, "lon": CENTER["lon"], "address": "제주시 격자동",
+         "points": [{"lat": CENTER["lat"], "lon": CENTER["lon"], "label": "입구", "info": "경사로 있음"}],
+         "nearby": [{"kind": "카페", "name": "바퀴카페", "wheelchair": "O", "toilet": ""}],
+         "doc": parse_doc(DOC), "barrier_points": 2, "toilet_points": 0},
+        {"name": "먼해변", "lat": CENTER["lat"] + 0.05, "lon": CENTER["lon"], "address": "", "points": [],
+         "nearby": [], "doc": None, "barrier_points": 0, "toilet_points": 1},
+    ]
+
+
+def test_barrier_free_nearby_and_detail(world):
+    _bf_world(world)
+    r = say(world, "근처 무장애 여행지", loc=LOC)
+    assert r["status"] == "ok" and [p["name"] for p in r["places"]] == ["격자공원", "먼해변"]
+    assert "휠체어 추천 (보호자와 함께)" in r["places"][0]["detail"]
+    assert "장애인 화장실 있음" in r["places"][1]["detail"]
+    agent = Agent(world["store"], world["ctx"], clock=lambda: NOW,
+                  llm=MockLLM(lambda _t: json.dumps({"intent": "barrier_free", "place_query": "격자공원"})))
+    r = say(world, "격자공원 휠체어로 갈 수 있어?", agent=agent)
+    assert r["message"].startswith("격자공원의 무장애 여행 정보란다.") and "장애인 화장실 있음" in r["message"]
+    assert r["places"][1]["name"] == "입구" and any("바퀴카페" in m for m in r["missing_data"])
+    assert any("2019~2021년" in m for m in r["missing_data"])
+    for text in [r["message"], *r["missing_data"], *(p["name"] + p["detail"] for p in r["places"])]:
+        assert_user_text(text)
+
+
+def test_parse_2020_doc_and_gps_track(tmp_path):
+    from jeju_lifepath.data.barrier_free import build, parse_doc
+
+    doc = parse_doc("""제주해양동물박물관
+그림  IMG_6241.JPG
+바다는 고래와 상어 물고기 등 다양한 생물들이 살고 있는 생명체의 보금자리이고 해양동물 전문박물관으로 800여종이 전시되어 있다.
+이동약자를 위한 안내: 접근성이 좋아 관광약자 이용이 편리한 관광지 이다.
+관람시간
+09:00~18:00
+관 람 료
+일반 9,000원
+승강기
+1대
+주 소
+제주특별자치도 서귀포시 성산읍 서성일로 689-21
+장애인 주차구역 2대""")
+    assert doc["notes"][0].startswith("접근성이 좋아") and "승강기 1대" in doc["notes"]
+    assert doc["hours"] == "09:00~18:00" and doc["fee"] == "일반 9,000원" and doc["disabled_parking"] == "있음"
+    assert doc["address"].endswith("689-21") and doc["summary"].startswith("바다는")
+
+    hub, zips = tmp_path / "hub", tmp_path / "zip" / "622_제주특별자치도_무장애여행정보_격자공원"
+    hub.mkdir(); zips.mkdir(parents=True)
+    (zips / "001-1.csv").write_text("아이디,위도,경도,고도\n" + "".join(
+        f"1,{33.4 + i / 1e4},{126.5},{6 + i}\n" for i in range(700)), encoding="utf-8")
+    (zips / "001-2.csv").write_text("아이디,위도,경도,고도,장소명,장소설명,이미지파일\n"
+                                    "1,33.4,126.5,,주차장[시작],,a.jpg\n1,33.4,126.5,6,주차장[시작],장애인주차 6대,\n",
+                                    encoding="utf-8")
+    p = build(hub, tmp_path / "없음", tmp_path / "없음", lambda _f: "", tmp_path / "zip")[0]
+    assert p["name"] == "격자공원" and len(p["track"]) <= 300 and p["track"][-1] == [33.4699, 126.5]
+    assert p["climb_m"] == 699 and p["points"] == [
+        {"lat": 33.4, "lon": 126.5, "label": "주차장[시작]", "info": "장애인주차 6대"}]
+
+
+def test_barrier_free_detail_sends_walked_track(world):
+    _bf_world(world)
+    world["ctx"].barrier_free[0]["track"] = [[33.4, 126.5], [33.41, 126.51]]
+    world["ctx"].barrier_free[0]["climb_m"] = 12
+    agent = Agent(world["store"], world["ctx"], clock=lambda: NOW,
+                  llm=MockLLM(lambda _t: json.dumps({"intent": "barrier_free", "place_query": "격자공원"})))
+    r = say(world, "격자공원 무장애 코스 보여줘", agent=agent)
+    assert r["track"] == [[33.4, 126.5], [33.41, 126.51]]
+    assert r["missing_data"][0].startswith("지도의 초록 선은") and "12m" in r["missing_data"][0]
+
+
+def test_ramps_and_no_step_are_not_barriers():
+    from jeju_lifepath.data.barrier_free import BARRIER_WORDS
+
+    for good in ["경사로 있음", "턱 없음", "계단 없이 평탄", "턱이 없는 평탄한 길", "전경사진"]:
+        assert not BARRIER_WORDS.search(good), good
+    for bad in ["계단 2칸", "접근성 정보 있음 (계단 혹은 경사 있음. 길 상태 안 좋음)", "4.5cm 턱"]:
+        assert BARRIER_WORDS.search(bad), bad

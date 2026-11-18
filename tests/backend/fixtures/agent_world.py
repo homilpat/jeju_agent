@@ -161,5 +161,17 @@ def make_context(policy: Policy | None = None, kakao=None, router=None) -> Agent
         toilets=[],
         toilets_in=lambda t, c, r: [],
         nearest=lambda pts, lat, lon: [],
+        # 허브 자료 흉내(합성, 실제 시설 아님): 주소는 AREAS 이름이라 가짜 주소 검색이 찾는다
+        addr_facilities={
+            "night_pharmacy": [{"name": "별빛약국", "addresses": ["제주시 격자동"], "notes": ["밤 23:00까지"]}],
+            "nursing_room": [{"name": "격자 주민센터", "addresses": ["제주시 격자마을"], "notes": ["가족수유실"]}],
+            "emergency": [{"name": "격자병원", "addresses": ["제주시 격자동"],
+                           "notes": ["지역응급의료센터", "전화 064-000-0000"]}],
+        },
+        olle=[{"course": "7코스", "name": "서귀포-월평", "length": "17.7km", "time": "5~6시간",
+               "start": "한라공원", "end": "격자미술관"}],
+        barrier_free=[{"name": "격자공원", "lat": CENTER["lat"] + 0.001, "lon": CENTER["lon"],
+                       "address": "제주시 격자동", "points": [], "nearby": [], "doc": None,
+                       "barrier_points": 1, "toilet_points": 1}],
         dataset_version="synthetic-grid",
     )

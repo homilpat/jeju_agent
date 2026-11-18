@@ -35,6 +35,8 @@ JSON 하나만 출력한다. 설명·코드블록 없이 JSON만.
 할 수 있는 일(intent):
 - guide: 근처 시설(약국·화장실·와이파이·파출소·공공심야약국·수유실·응급실)이나 장소 종류 찾기, 특정 장소 설명
 - olle: 제주 올레길 코스 안내(몇 코스인지, 가까운 코스). 코스를 말했으면 place_query에 "7코스"처럼
+- barrier_free: 휠체어·유모차·어르신이 가기 좋은 곳(무장애 여행지) 찾기, 어떤 장소의 장애인 화장실·경사·턱 같은
+  접근성 묻기. 장소 이름을 말했으면 place_query에
 - route: 두 곳 사이 걷는 길 / route_poi: 정해진 도착지로 가는 길 중간에 들를 시설·장소 찾기(도착지가 있어야 함)
 - area_gap: 한 지역에서 시설이 멀거나 부족한 곳 살펴보기
 - plan_create: 들를 곳을 넣은 걷기 코스·일정 만들기("~들르고 돌아오는 코스"도 여기) / plan_modify: 이미 있는 일정 고치기
@@ -48,7 +50,7 @@ JSON 하나만 출력한다. 설명·코드블록 없이 JSON만.
 
 출력 형식(값이 있는 칸만 출력하고 나머지 칸은 아예 쓰지 않는다.
 true|false 칸은 사용자가 이번 말에서 켜거나 끄라고 직접 말했을 때만 쓴다. 말하지 않았으면 false로 채우지 말고 칸을 뺀다):
-{{"intent": "guide|route|route_poi|area_gap|plan_create|plan_modify|save_trip|olle|chat|unsupported",
+{{"intent": "guide|route|route_poi|area_gap|plan_create|plan_modify|save_trip|olle|barrier_free|chat|unsupported",
  "location_text": 출발·기준 장소 고유명사|null, "use_current_location": true|false,
  "destination_text": 도착 장소 고유명사|null, "round_trip": true|false,
  "facility": "pharmacy|toilet|wifi|police|night_pharmacy|nursing_room|emergency"|null, "place_query": 설명을 원하는 장소 이름|null,

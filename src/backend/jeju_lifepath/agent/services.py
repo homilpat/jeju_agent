@@ -14,10 +14,12 @@ import shapely
 
 from jeju_lifepath.agent.models import Policy, ToolError
 from jeju_lifepath.agent.parse import THEME_CATEGORY, is_kind
+from jeju_lifepath.data.barrier_free import name_key
 from jeju_lifepath.agent.tools import (
     AreaAccessIn,
     CompareRoutesIn,
     MatrixIn,
+    BarrierFreeIn,
     NearbyIn,
     OlleIn,
     ResolveLocationIn,
@@ -50,6 +52,7 @@ PUBLIC_SOURCES = {
     "emergency": "응급의료기관 현황(제주데이터허브)",
 }
 OLLE_SOURCE = "올레코스 현황(제주데이터허브)"
+BARRIER_FREE_SOURCE = "무장애여행정보(제주데이터허브·공공데이터포털)"
 
 
 @dataclass
@@ -66,6 +69,7 @@ class AgentContext:
     # 제주데이터허브 주소 자료 {시설 종류: 화장실과 같은 모양}과 올레 코스(api.app.load_hub_links)
     addr_facilities: dict = field(default_factory=dict)
     olle: list = field(default_factory=list)
+    barrier_free: list = field(default_factory=list)  # data.barrier_free.build 결과(장소별)
     nearest: Callable | None = None
     dataset_version: str = "local"
     # 게시 전에 여행 본문을 수동 플래너와 같은 규칙(app.Planner)으로 검사. 어긋나면 예외
@@ -198,6 +202,23 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
             for c in out:
                 c["end_at"] = spot(c["end"]) if c["end"] and c["end"] != c["start"] else None
         return {"courses": out, "source": "public"}
+
+    def barrier_free_places(a: BarrierFreeIn) -> dict:
+        """무장애 여행지(허브·포털 무장애여행정보). 이름이면 그 장소, 아니면 가까운 5곳."""
+        if a.name:
+            want = name_key(a.name)
+            hits = [p for p in ctx.barrier_free if name_key(p["name"]) == want] or [
+                p for p in ctx.barrier_free if want in name_key(p["name"]) or name_key(p["name"]) in want
+            ]
+            return {"places": hits[:1], "detail": True, "source": "public"}
+        if a.near is None:
+            raise ToolError("invalid_args", "name or near")
+        ranked = sorted(
+            ({**p, "distance_m": round(haversine_m(a.near.lon, a.near.lat, p["lon"], p["lat"]))}
+             for p in ctx.barrier_free),
+            key=lambda p: p["distance_m"],
+        )
+        return {"places": ranked[:NEARBY_LIMIT], "detail": False, "source": "public"}
 
     def compare_routes(a: CompareRoutesIn) -> dict:
         from jeju_lifepath.presentation.route import render_plan  # noqa: PLC0415
@@ -388,6 +409,12 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
                 "약국·화장실·와이파이·경찰관서·심야약국·수유실·응급실 가까운 곳",
                 NearbyIn,
                 find_nearby_facilities,
+            ),
+            ToolSpec(
+                "barrier_free_places",
+                "무장애 여행지(휠체어·유모차 접근성 조사 자료) 가까운 곳 또는 한 곳 상세",
+                BarrierFreeIn,
+                barrier_free_places,
             ),
             ToolSpec(
                 "olle_courses",

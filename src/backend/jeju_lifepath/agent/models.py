@@ -18,7 +18,7 @@ POLICY_FILE = ROOT / "configs" / "agent_policy.json"
 # save_trip: 대화에서 만든 일정 초안을 내 여행에 저장
 Intent = Literal[
     "guide", "route", "route_poi", "area_gap", "plan_create", "plan_modify", "save_trip", "chat",
-    "unsupported", "olle",
+    "unsupported", "olle", "barrier_free",
 ]
 # 응답 상태(12.7). 화면 코드가 분기에만 쓰고 사용자에게 보여주지 않는다
 Status = Literal["ok", "needs_input", "partial", "infeasible", "unsupported", "error", "cancelled"]

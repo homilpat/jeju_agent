@@ -53,6 +53,42 @@
       "_history": "2026-11-18 기대값 stops=1은 '빵집 두 곳이랑 카페'를 2곳으로 보던 옛 규칙에 묶여 있었다. LLM이 종류별 개수(빵집 2+카페 1)를 판단하게 바꾼 뒤(사용자 결정) 실 LLM 3회에서 실패. '처음보다 한 곳 적음'으로 고침"
     },
     {
+      "id": "D01-night-pharmacy",
+      "split": "dev",
+      "_note": "2026-11-19 허브 LINK 자료(공공심야약국)",
+      "turns": [{"text": "밤에 문 연 약국 있어?", "location": "center"}],
+      "expect": {"intent": "guide", "status": "ok", "required_tools": ["find_nearby_facilities"],
+                 "forbidden_tools": ["compare_routes", "get_travel_matrix"], "trip_changes": 0}
+    },
+    {
+      "id": "D02-emergency-119",
+      "split": "dev",
+      "turns": [{"text": "응급실 제일 가까운 데 알려줘", "location": "center"}],
+      "expect": {"intent": "guide", "status": "ok", "required_tools": ["find_nearby_facilities"],
+                 "trip_changes": 0, "missing_contains": "119"}
+    },
+    {
+      "id": "D03-olle-course",
+      "split": "dev",
+      "turns": [{"text": "올레 7코스는 얼마나 걸려?"}],
+      "expect": {"intent": "olle", "status": "ok", "required_tools": ["olle_courses"],
+                 "forbidden_tools": ["compare_routes", "get_travel_matrix"], "trip_changes": 0}
+    },
+    {
+      "id": "D04-barrier-free-nearby",
+      "split": "dev",
+      "turns": [{"text": "휠체어로 갈 만한 곳 근처에 있어?", "location": "center"}],
+      "expect": {"intent": "barrier_free", "status": "ok", "required_tools": ["barrier_free_places"],
+                 "trip_changes": 0}
+    },
+    {
+      "id": "D05-nursing-room",
+      "split": "dev",
+      "turns": [{"text": "아기 수유할 곳 찾아줘", "location": "center"}],
+      "expect": {"intent": "guide", "status": "ok", "required_tools": ["find_nearby_facilities"],
+                 "trip_changes": 0}
+    },
+    {
       "id": "C01-transient-then-ok",
       "split": "dev",
       "inject": {"kakao_fail": ["transient"]},

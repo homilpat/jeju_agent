@@ -533,6 +533,8 @@ const ROUTE_LINE_STYLE = {
   SHORTEST: { color: "--orange", weight: 4, dash: "solid" },
   BALANCED: { color: "--sea-600", weight: 4, dash: "shortdot" },
   SAFETY: { color: "--sea-900", weight: 7, dash: "solid" },
+  // 무장애 여행지에서 조사자가 실제로 걸은 코스(GPS, 제주데이터허브)
+  ACCESS: { color: "--access-green", weight: 6, dash: "solid" },
 };
 const MAX_PLACES = 30; // 서버 상한과 같게(api/app.py)
 
@@ -1865,7 +1867,13 @@ function AgentScreen({ tripId, setTripId, onOpenPlanner, onTrips, memory }) {
         .filter((p) => p.lat != null)
         .map((p, i) => ({ key: `ai${i}`, number: i + 1, name: p.name, lat: p.lat, lon: p.lon }));
   const chosen = latest?.routes?.routes.find((r) => r.kind === routeKind && r.found);
-  const lines = showTrip ? tripMap.routeLines : chosen ? [{ key: "ai-route", kind: chosen.kind, path: chosen.line }] : [];
+  const lines = showTrip
+    ? tripMap.routeLines
+    : chosen
+      ? [{ key: "ai-route", kind: chosen.kind, path: chosen.line }]
+      : latest?.track?.length
+        ? [{ key: "access-track", kind: "ACCESS", path: latest.track }]
+        : [];
 
   // 대화를 바꾼다: id가 없으면 새 대화, 있으면 그 지난 대화를 불러온다
   const switchTo = (id) => {

@@ -399,6 +399,8 @@ def parse_rules(text: str, now: datetime, has_trip: bool = False) -> ParseResult
         intent = "route"
     elif "올레" in raw:
         intent = "olle"
+    elif "무장애" in raw:
+        intent = "barrier_free"
     elif slots.facility:
         intent = "guide"
     elif named := _place_before(raw, r"(?:은|는|이|가)?\s*(?:설명|어떤\s*곳|뭐야)"):
