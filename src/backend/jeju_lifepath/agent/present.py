@@ -839,9 +839,10 @@ def too_far_question(walk_min: int) -> dict:
     """돌아올 시각 없이 걷기만 하루를 넘는 일정: 숫자는 계산 결과 그대로, 고르는 건 사용자."""
     hours = round(walk_min / 60)
     return {"text": f"고른 곳들이 멀어서 걷는 시간만 {hours}시간쯤 된단다. 걸어서 하루에 다니기는 어렵겠구나. "
-                    "한 곳만 들를까, 아니면 조건을 줄여서 가까운 곳으로 찾아볼까?",
-            "options": [{"label": "한 곳만 들를게", "reply": "한 곳만 들를게"},
-                        {"label": "가까운 곳으로 찾아줘", "reply": "조건을 줄여서 가까운 곳으로 찾아줘"}]}
+                    "한 곳만 들를까, 아니면 얼마나 가까운 곳에서 다시 찾아볼까?",
+            # 거리는 사용자가 고른다(LLM이 정하면 매번 달라짐). 기준점에서 직선거리
+            "options": [{"label": "한 곳만 들를게", "reply": "한 곳만 들를게"}]
+            + [{"label": f"{km}km 안에서 찾아줘", "reply": f"{km}km 안에서 다시 찾아줘"} for km in (3, 5, 10)]}
 
 
 def validation_failed(ctx, p, check, version) -> dict:

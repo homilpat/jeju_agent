@@ -1867,4 +1867,5 @@ def test_plan_longer_than_a_day_of_walking_asks_instead(world):
     r = say(world, PLAN, agent=Agent(world["store"], ctx, clock=lambda: NOW))
     assert r["status"] == "needs_input" and not r.get("itinerary")
     assert "하루에 다니기는 어렵겠구나" in r["questions"][0]["text"]
-    assert [o["label"] for o in r["questions"][0]["options"]] == ["한 곳만 들를게", "가까운 곳으로 찾아줘"]
+    assert [o["label"] for o in r["questions"][0]["options"]] == [
+        "한 곳만 들를게", "3km 안에서 찾아줘", "5km 안에서 찾아줘", "10km 안에서 찾아줘"]
