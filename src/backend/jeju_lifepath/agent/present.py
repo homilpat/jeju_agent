@@ -36,9 +36,6 @@ TOOL_WORD = {
 }
 EMERGENCY_119 = "많이 아프거나 위급하면 걸어가지 말고 바로 119에 전화하렴."
 HOURS_UNVERIFIED = "영업시간은 내가 확인하지 못했단다. 가기 전에 카카오맵에서 꼭 확인해 보렴."
-GREEDY_NOTE = (
-    "덜 돌아가는 순서로 골라 본 거란다. 이게 꼭 제일 좋은 조합이라고 장담하지는 못해."
-)
 HELP = (
     "이런 걸 도와줄 수 있단다: 근처 약국·화장실·와이파이 찾기, 두 곳 사이 걷는 길 비교, "
     "가는 길에 들를 약국·화장실 찾기, 동네에서 약국·화장실이 먼 곳 살펴보기, "
@@ -897,12 +894,12 @@ def itinerary(
 ) -> dict:
     end_label = "출발한 곳으로 돌아오기" if s.round_trip else f"{s.destination_text}까지"
     view = _itinerary_view(stops, leg_list, check, end_label)
-    notes = [GREEDY_NOTE]
+    # 이 일정에만 해당하는 말만 붙인다. 영업시간 미확인·머무는 시간 빠짐·순서가 최선이라 장담 못 함 같은
+    # 모든 일정에 같은 말은 시작 화면 안내로 한 번만(답마다 되풀이하면 정작 중요한 말이 묻힘)
+    notes = []
     if ctx.get("start_label") in ("지금 위치", "지도 가운데"):
-        notes.insert(0, f"{ctx['start_label']}에서 출발하는 기준으로 짰단다.")
-    missing = [HOURS_UNVERIFIED]
-    if not s.stay_minutes:
-        missing.append("걷는 시간만 셈했고 머무는 시간은 빠져 있단다.")
+        notes.append(f"출발점은 {ctx['start_label']}로 잡았단다. 다른 곳에서 출발하면 말해 주렴.")
+    missing = []
     if "leg_unknown" in check["warnings"] or "unlocated" in ctx["observations"]:
         missing.append("다시 찾지 못한 장소가 있어서 일부 구간 시간은 확인하지 못했구나.")
     warnings = []
@@ -930,14 +927,9 @@ def itinerary(
     if "theme_not_found" in ctx["observations"]:
         warnings.append("말한 종류의 새 장소는 찾지 못해서 넣지 못했구나.")
     if mobility != MobilityProfile.STANDARD:
-        notes.append(
-            f"{MOBILITY_WORD[mobility]}로 갈 수 없는 계단 구간을 빼고 셈했단다. "
-            "계단 말고 다른 장애물은 자료가 없어서 확인하지 못했구나."
-        )
-        notes.append(
-            f"{MOBILITY_WORD[mobility]}로 다니기 좋은지 직접 조사한 무장애 여행지도 있단다. "
-            "'근처 무장애 여행지 알려줘'라고 물어보렴."
-        )
+        notes.append(f"{MOBILITY_WORD[mobility]}로 못 가는 계단 길은 뺐단다. 계단 말고 다른 장애물은 확인하지 못했어.")
+        if not any(x.get("access") for x in stops):  # 무장애 여행지로 짠 일정이 아니면 그쪽도 있다고 알려 줌
+            notes.append(f"{MOBILITY_WORD[mobility]}로 다니기 좋은 무장애 여행지로도 짜 줄 수 있단다.")
     count = len(stops)
     msg = (
         f"좋은 생각이야! {count}곳을 들르는 일정을 짜 봤단다. 마음에 들면 내 여행에 저장해 두렴."

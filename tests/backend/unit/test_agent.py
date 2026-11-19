@@ -622,7 +622,7 @@ def test_wheelchair_itinerary_warns_unverified_paths(world):
     # 2026-11-19 사용자 결정: 휠체어도 확인 안 된 길로 짜되, 계단만 피했고 나머지는 모른다고 알린다
     r = say(world, "휠체어로 격자동에서 빵집 한 곳 들르고 돌아오는 코스 짜줘")
     assert r["status"] == "ok" and r["itinerary"]["stops"]
-    assert any("계단 말고 다른 장애물은" in m for m in r["itinerary"]["notes"])
+    assert any("계단 말고 다른 장애물은 확인하지 못했어" in m for m in r["itinerary"]["notes"])
 
 
 def test_far_from_road_candidate_skipped(world):

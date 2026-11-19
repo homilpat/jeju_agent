@@ -427,7 +427,9 @@ function Welcome({ onStart }) {
           <span>
             안전 정보는 공공데이터 기준이며
             <br />
-            실제와 다를 수 있어요. 공사·통제 정보는 반영하지 못했어요.
+            실제와 다를 수 있어요. 공사·통제 정보와 가게 영업시간은 확인하지 못하고,
+            <br />
+            일정의 시간은 걷는 시간만 셈해요.
           </span>
         </div>
         <button className="primary-button" onClick={onStart}>
