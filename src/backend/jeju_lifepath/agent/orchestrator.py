@@ -14,6 +14,7 @@ import math
 import re
 import time
 import uuid
+from urllib.parse import quote
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
@@ -568,7 +569,8 @@ class Agent:
                     ctx["parse"] = ParseResult(intent="chat", reply=final or LLM_STUCK, parser=self.llm.mode,
                                                reference_time=now.isoformat())
                     return present.chat(ctx, ctx["parse"], self.policy.version)
-                if final and final not in draft["message"]:
+                # 거절 화면은 할 말(거절·대안·버튼)을 이미 다 담았다: LLM의 비슷한 덧붙임은 붙이지 않음
+                if final and final not in draft["message"] and draft["status"] != "unsupported":
                     draft["message"] = f"{draft['message']} {final}"
                 ctx["parse"] = shown_parse  # 게시(_publish)는 이 화면을 만든 해석 기준으로
                 return draft
@@ -760,8 +762,27 @@ class Agent:
         if p.intent == "unsupported" or (
             p.slots.transport in ("car", "bus", "taxi") and p.intent in ("route", "plan_create")
         ):
-            return present.unsupported(ctx, p, self.policy.version)
+            return present.unsupported(ctx, p, self.policy.version, self._kakao_map_link(p, ctx))
         return self._dispatch_handler(p, ctx)
+
+    def _kakao_map_link(self, p: ParseResult, ctx) -> dict | None:
+        """차·버스·택시 길은 카카오맵 길찾기로 넘긴다(카카오맵 공식 링크, 차·대중교통·도보를 사용자가 고름).
+        도착지 위치는 이번 응답의 링크에만 쓰고 저장하지 않는다(응답 저장본은 카카오 자료를 뺌)."""
+        dest = p.slots.destination_text
+        if not dest or p.slots.transport not in ("car", "bus", "taxi"):
+            return None
+        try:
+            at = ctx["runner"].call("resolve_location", {"text": dest})
+        except ToolError:
+            at = {"status": "not_found"}
+        if at.get("status") == "found":  # 위치를 알면 도착지가 채워진 길찾기
+            name = at["label"].replace(",", " ")
+            url = f"https://map.kakao.com/link/to/{quote(name)},{at['lat']},{at['lon']}"
+            return {"name": at["label"], "detail": "차·대중교통·도보 길찾기", "url": url,
+                    "link_label": "카카오맵에서 길찾기", "lat": at["lat"], "lon": at["lon"]}
+        # 여러 곳이거나 못 찾으면 이름 검색으로(사용자가 카카오맵에서 고름)
+        return {"name": dest, "detail": "카카오맵에서 찾아 길찾기", "url": f"https://map.kakao.com/link/search/{quote(dest)}",
+                "link_label": "카카오맵에서 찾기", "lat": None, "lon": None}
 
     def _ask_first(self, p: ParseResult) -> None:
         """실행 전에 사용자에게 물을 것(빠진 조건, 몸이 불편할 때, 짐작한 이동 조건, 대화에 없는 이름)."""

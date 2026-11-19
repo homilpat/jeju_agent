@@ -178,3 +178,12 @@ def test_refusal_is_kept_when_a_missing_question_follows(world):
                     call("ask_user", question="어디서 출발하니?"))
     r = say(world, "택시 타고 격자마을 가는 길", agent=agent_with(world, llm))
     assert r["status"] == "needs_input" and "도와주지 못한단다" in r["message"]
+
+
+def test_vehicle_request_hands_off_to_kakao_map_directions(world):
+    llm, _ = script(call("cannot_do", unsupported_features=["택시 경로"], transport="taxi",
+                         destination_text="한라공원"), {"content": ""})
+    r = say(world, "택시로 한라공원 가는 길", agent=agent_with(world, llm))
+    card = r["places"][0]
+    assert card["url"].startswith("https://map.kakao.com/link/") and card["link_label"].startswith("카카오맵")
+    assert "카카오맵 길찾기" in r["message"] and r["questions"][0]["options"][0]["label"] == "걸어서 갈게"

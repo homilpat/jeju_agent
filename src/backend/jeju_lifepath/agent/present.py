@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from jeju_lifepath.agent.kakao import SOURCE as KAKAO_SOURCE
 from jeju_lifepath.agent.services import BARRIER_FREE_SOURCE, OLLE_SOURCE, PUBLIC_SOURCES
-from jeju_lifepath.presentation.route import PREF_TEXT
+from jeju_lifepath.presentation.route import PREF_TEXT, _topic
 from jeju_lifepath.schemas import MobilityProfile, RoutePreference
 
 FACILITY_WORD = {
@@ -253,18 +253,21 @@ def version_conflict(ctx, version) -> dict:
 
 
 def unsupported_line(features: list[str]) -> str:
-    return f"{'·'.join(features)}은(는) 아직 도와주지 못한단다."
+    what = "·".join(features)
+    return f"{what}{_topic(what)} 아직 도와주지 못한단다."
 
 
-def unsupported(ctx, p, version) -> dict:
+def unsupported(ctx, p, version, map_link: dict | None = None) -> dict:
     feats = p.unsupported_features or ["요청하신 기능"]
     msg = unsupported_line(feats)
     # LLM이 붙인 이름("택시 이동" 등)이 아니라 해석한 이동 수단으로 본다
     if "차량 이동" in feats or p.slots.transport in ("car", "bus", "taxi"):
-        # 대안(걷는 길)은 제안만 하고 사용자가 고른다: 동의 없이 바로 계산하지 않음
-        msg += " 걸어서 가는 길은 찾아 줄 수 있단다."
+        # 차·대중교통 길은 카카오맵 길찾기로 넘기고, 걷는 길은 제안만(동의 없이 바로 계산하지 않음)
+        if map_link:
+            msg += " 차나 대중교통 길은 카카오맵 길찾기에서 볼 수 있단다."
+        msg += " 걸어서 가는 길은 내가 찾아 줄 수 있어."
         walk = [{"text": msg, "options": [{"label": "걸어서 갈게", "reply": "걸어서 갈게"}]}]
-        return _from(ctx, "unsupported", msg, version, questions=walk)
+        return _from(ctx, "unsupported", msg, version, questions=walk, places=[map_link] if map_link else [])
     return _from(ctx, "unsupported", msg, version)
 
 

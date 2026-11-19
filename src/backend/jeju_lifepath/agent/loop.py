@@ -79,7 +79,9 @@ TOOLS = [
      "할 수 없는 요청을 정중히 거절(차·버스·택시 경로, 예약·결제, 메뉴·가격 등). 대안은 실행하지 않고 제안만 "
      "(차·버스·택시면 '걸어서 갈게' 버튼이 붙음)",
      _obj({"unsupported_features": {"type": "array", "items": S, "description": "못 하는 일(짧은 우리말)"},
-           "transport": {"type": "string", "enum": ["car", "bus", "taxi"]}}, ("unsupported_features",))),
+           "transport": {"type": "string", "enum": ["car", "bus", "taxi"]},
+           "destination_text": {**S, "description": "가려는 곳(차·대중교통 길은 카카오맵 길찾기로 넘김)"}},
+          ("unsupported_features",))),
     ("reply", None, "도구가 필요 없는 답(인사·도움말·설명). 답을 끝낼 때 쓴다",
      _obj({"text": {**S, "description": "제주 할망 말투 한두 문장"}}, ("text",))),
     ("ask_user", None, "꼭 필요한 정보가 없을 때 사용자에게 묻기(버튼 보기 선택)",

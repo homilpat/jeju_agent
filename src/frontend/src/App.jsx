@@ -1455,7 +1455,7 @@ function AgentReply({ reply, onSend, onUseLocation, onOpenPlanner, save, onSave,
               {!reply.routes && <small>{[p.detail, p.address].filter(Boolean).join(" · ")}</small>}
               {p.url && (
                 <a href={p.url} target="_blank" rel="noreferrer">
-                  카카오맵에서 보기
+                  {p.link_label || "카카오맵에서 보기"}
                 </a>
               )}
               {taxiButton(p)}
