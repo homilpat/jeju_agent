@@ -400,7 +400,7 @@ YES = {"O", "Y", "가능", "있음", "○", "●"}
 FIRST_SENTENCE = re.compile(r"(?<=[다요])\.\s*")
 
 
-def _access_bits(x: dict) -> list[str]:
+def access_bits(x: dict) -> list[str]:
     """한 장소의 접근성 요약 낱말들(조사 자료에 있는 것만)."""
     doc = x.get("doc") or {}
     bits = []
@@ -424,7 +424,7 @@ def barrier_free(ctx, p, at, r, version) -> dict:
         what = f"'{p.slots.place_query}'의 " if p.slots.place_query else ""
         return _from(ctx, "ok", f"{what}무장애 여행 정보는 찾지 못했구나.", version, evidence=evidence)
     if not r["detail"]:
-        places = [{"name": x["name"], "detail": " · ".join([f"약 {_distance(x['distance_m'])}", *_access_bits(x)]),
+        places = [{"name": x["name"], "detail": " · ".join([f"약 {_distance(x['distance_m'])}", *access_bits(x)]),
                    "address": x.get("address") or "", "url": None, "lat": x["lat"], "lon": x["lon"]}
                   for x in found]
         return _from(ctx, "ok", f"{at['label']}에서 가까운 무장애 여행지 {len(places)}곳이란다.", version,
@@ -432,7 +432,7 @@ def barrier_free(ctx, p, at, r, version) -> dict:
     x = found[0]
     doc = x.get("doc") or {}
     first = FIRST_SENTENCE.split(doc.get("summary") or "")[0].strip()
-    bits = _access_bits(x)
+    bits = access_bits(x)
     msg = f"{x['name']}의 무장애 여행 정보란다." + (f" {first}." if first else "")
     if bits:
         msg += " " + ", ".join(bits) + "."
@@ -828,7 +828,7 @@ def _stop_view(i: int, st: dict, minutes: int | None) -> dict:
     return {
         "number": i + 1,
         "name": st.get("name") or f"{st['theme']} (다시 찾지 못함)",
-        "detail": " · ".join(filter(None, [st.get("category"), st.get("address")])),
+        "detail": " · ".join(filter(None, [st.get("category"), st.get("access"), st.get("address")])),
         "address": st.get("address") or "",  # 기사님께 보여주기(화면이 큰 글씨로)
         "url": st.get("url"),
         "walk_minutes": minutes,
@@ -897,6 +897,9 @@ def itinerary(
         else:
             why = "더 들를 만한 곳을 찾지 못해서 "
         warnings.append(f"{s.stop_count}곳을 부탁했는데 {why}{len(stops)}곳만 넣었단다.")
+    if "barrier_free_unmatched" in ctx["observations"]:
+        n = ctx["observations"].count("barrier_free_unmatched")
+        warnings.append(f"카카오 지도에서 같은 이름을 찾지 못한 무장애 여행지 {n}곳은 일정 후보에서 뺐단다.")
     if "theme_not_found" in ctx["observations"]:
         warnings.append("말한 종류의 새 장소는 찾지 못해서 넣지 못했구나.")
     if mobility != MobilityProfile.STANDARD:

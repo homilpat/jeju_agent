@@ -222,7 +222,7 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
              for p in ctx.barrier_free),
             key=lambda p: p["distance_m"],
         )
-        return {"places": ranked[:NEARBY_LIMIT], "detail": False, "source": "public"}
+        return {"places": ranked[: a.limit], "detail": False, "source": "public"}
 
     def compare_routes(a: CompareRoutesIn) -> dict:
         from jeju_lifepath.presentation.route import render_plan  # noqa: PLC0415

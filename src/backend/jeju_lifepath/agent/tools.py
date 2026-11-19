@@ -108,6 +108,7 @@ class BarrierFreeIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str | None = Field(default=None, min_length=1, max_length=40)
     near: Point | None = None
+    limit: int = Field(default=5, ge=1, le=20)  # 가까운 곳 몇 곳(일정 후보는 더 많이)
 
 
 class MatrixIn(BaseModel):

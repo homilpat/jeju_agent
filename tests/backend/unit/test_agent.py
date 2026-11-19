@@ -18,7 +18,7 @@ from jeju_lifepath.agent.parse import parse_rules
 from jeju_lifepath.api import store as store_module
 from jeju_lifepath.api.store import DraftOutdated, Store
 from jeju_lifepath.schemas import RoutePreference
-from tests.backend.fixtures.agent_world import CENTER, NOW, FakeKakao, make_context
+from tests.backend.fixtures.agent_world import CENTER, LAT0, LON0, NOW, STEP, FakeKakao, make_context
 from tests.backend.fixtures.user_text import assert_user_text
 
 LOC = {"lon": CENTER["lon"], "lat": CENTER["lat"]}
@@ -1833,3 +1833,48 @@ def test_body_discomfort_question_survives_other_answers(world):
     out.pop("ask"); out.pop("mobility_unclear"); out["destination_text"] = "격자마을"
     r = say(world, "격자마을까지", agent=agent, conv=conv)
     assert r["message"] == "휠체어나 유모차를 쓰니? 맞는 길로 찾아 줄게."  # 다른 것만 답해도 다시 물음
+
+
+def test_barrier_free_places_become_itinerary_stops(world):
+    # 휠체어 일정: 후보를 무장애 여행지에서 고르고, 이름으로 찾은 카카오 장소로 저장·수정·다시 열기
+    world["ctx"].barrier_free.append({"name": "없는동산", "lat": CENTER["lat"], "lon": CENTER["lon"] + 0.001,
+                                      "address": "", "points": [], "nearby": [], "doc": None,
+                                      "barrier_points": 0, "toilet_points": 0})
+    out = {"intent": "plan_create", "location_text": "격자동", "mobility": "WHEELCHAIR",
+           "themes": ["무장애 여행지"], "stop_count": 1, "round_trip": True}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    r = say(world, "휠체어로 격자동에서 갈 만한 곳 한 곳 들르고 돌아오는 코스", agent=agent)
+    stop = r["itinerary"]["stops"][0]
+    assert stop["name"] == "격자공원" and "장애인 화장실 있음" in stop["detail"]
+    assert any("같은 이름을 찾지 못한 무장애 여행지 1곳" in w for w in r["warnings"])
+    from jeju_lifepath.agent.orchestrator import BARRIER_FREE_THEME, locate_trip, relocate_query  # noqa: PLC0415
+    assert relocate_query({"theme": BARRIER_FREE_THEME, "query": "격자공원"}) == "격자공원"
+    body = {"places": [{"source": "kakao", "ref": "k13", "name": "격자공원", "category": BARRIER_FREE_THEME}],
+            "agent": {"start_point": {"lon": CENTER["lon"], "lat": CENTER["lat"]},
+                      "stops": [{"ref": "k13", "query": "격자공원", "theme": BARRIER_FREE_THEME}]}}
+    assert locate_trip(world["kakao"], body)["k13"]["name"] == "격자공원"  # 다시 열 때 같은 곳
+
+
+def test_barrier_free_joined_name_falls_back_to_first_name(world):
+    world["ctx"].barrier_free[:] = [{"name": "격자공원과한라숲", "lat": CENTER["lat"] + 0.001, "lon": CENTER["lon"],
+                                     "address": "", "points": [], "nearby": [], "doc": None,
+                                     "barrier_points": 0, "toilet_points": 0}]
+    out = {"intent": "plan_create", "location_text": "격자동", "mobility": "WHEELCHAIR",
+           "themes": ["무장애 여행지"], "stop_count": 1, "round_trip": True}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    r = say(world, "휠체어로 격자동에서 갈 만한 곳 한 곳 들르고 돌아오는 코스", agent=agent)
+    assert r["itinerary"]["stops"][0]["name"] == "격자공원"
+
+
+def test_barrier_free_match_rejects_attached_facility(world):
+    # "한라공원 주차장"은 한라공원에 딸린 곳이라 같은 곳으로 보지 않는다(접근성 정보를 붙이지 않음)
+    world["kakao"].places = [p for p in world["kakao"].places if p[1] != "한라공원"]
+    world["ctx"].barrier_free[:] = [{"name": "한라공원", "lat": LAT0 + 5 * STEP, "lon": LON0 + 3 * STEP,
+                                     "address": "", "points": [], "nearby": [], "doc": None,
+                                     "barrier_points": 0, "toilet_points": 1}]
+    out = {"intent": "plan_create", "location_text": "격자동", "mobility": "WHEELCHAIR",
+           "themes": ["무장애 여행지"], "stop_count": 1, "round_trip": True}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    r = say(world, "휠체어로 격자동에서 갈 만한 곳 한 곳 들르고 돌아오는 코스", agent=agent)
+    assert not (r.get("itinerary") or {}).get("stops")
+    assert "한라공원 주차장" not in json.dumps(r, ensure_ascii=False)

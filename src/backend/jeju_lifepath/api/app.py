@@ -343,6 +343,8 @@ class AgentStop(BaseModel):
     theme: str = Field(min_length=1, max_length=40)
     fixed: bool = False
     completed: bool = False
+    # 무장애 여행지의 접근성 요약(공공 무장애 조사 자료, 카카오 자료 아님)
+    access: str | None = Field(default=None, max_length=120)
 
 
 class AgentTripMeta(BaseModel):
