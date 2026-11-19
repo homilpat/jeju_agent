@@ -73,7 +73,7 @@ uvicorn jeju_lifepath.api.app:app --port 8000
 | `LLM_DAILY_BUDGET_USD` | LLM 하루 요금 상한(달러, 실제 토큰으로 계산). 평가용은 5 | 제출물의 `.env`에 들어 있음 | 상한 없음 |
 | `KAKAO_REST_API_KEY` | 장소·주소 검색(서버) | [카카오 디벨로퍼스](https://developers.kakao.com/) 앱 → REST API 키 | 장소 검색 기능 안내 문구로 끝남 |
 | `KAKAO_JS_KEY` | 화면 지도 | 같은 앱의 JavaScript 키(플랫폼에 `http://127.0.0.1:8000` 등록) | 지도가 안 보임 |
-| `SAFEMAP_API_KEY` | 범죄주의구간 지도 겹치기 | [생활안전지도 오픈API](https://www.safemap.go.kr/) | 겹쳐 보기만 꺼짐 |
+| `SAFEMAP_API_KEY` | 범죄주의구간 지도 겹치기, 경찰관서 자료 받기 | [생활안전지도 오픈API](https://www.safemap.go.kr/) | 겹쳐 보기만 꺼짐 |
 | `DATA_GO_KR_API_KEY` | 사고 다발지역 자료 받기(스크립트) | [공공데이터포털](https://www.data.go.kr/) 일반 인증키 | 안전환경 경로의 사고 지표 없음 |
 | `JEJU_DATAHUB_API_KEY`, `JEJU_HUB_*_DATA_ID` | 허브 와이파이 등 받기(스크립트) | [제주데이터허브](https://www.jejudatahub.net/) 마이페이지 → 프로젝트 관리 | 그 자료만 없음 |
 | `LLM_BASE_URL`, `LLM_MODEL`, `AGENT_LLM=off` | 다른 OpenAI 호환 제공자로 바꾸기, LLM 끄기(선택) | — | `configs/agent_policy.json`의 값 |
@@ -82,7 +82,9 @@ uvicorn jeju_lifepath.api.app:app --port 8000
 
 ## 자료 준비
 
-원본·가공 자료는 저장소에 없다(`data/private/`, `data/processed/`는 git 제외). 아래 순서로 받는다. 상세는 [docs/DATA_AVAILABILITY.md](docs/DATA_AVAILABILITY.md).
+**제출 ZIP에는 실행에 필요한 가공 자료가 들어 있어 이 단계를 건너뛰어도 돼요**(목록·출처·이용조건: [data/README.md](data/README.md)). 단, 생활안전지도 경찰관서는 이용조건(변경 금지) 때문에 빠져 있어 "근처 파출소"만 안 돼요. 받는 법은 data/README.md에 있어요.
+
+저장소(git)에서 받은 경우에는 자료가 없으니(`data/private/`, `data/processed/`는 git 제외) 아래 순서로 받는다. 상세는 [docs/DATA_AVAILABILITY.md](docs/DATA_AVAILABILITY.md).
 
 | 자료 | 출처(이용조건) | 받는 법 | 놓는 곳 | 없으면 |
 |---|---|---|---|---|
@@ -94,7 +96,7 @@ uvicorn jeju_lifepath.api.app:app --port 8000
 | 공중화장실 표준데이터 | 공공데이터포털 | CSV 내려받기 | `data/private/공중화장실정보_제주특별자치도.csv` | 근처 화장실 없음 |
 | 교통사고 다발지역 | 한국도로교통공단·전국 표준데이터(공공데이터포털) | `python scripts/fetch_accident_zones.py` (`DATA_GO_KR_API_KEY`) | `data/processed/accident-zones.geojson` | 안전환경 경로의 사고 지표 없음 |
 | 행정동 경계 | 통계청 SGIS, 가공 vuski/admdongkor(CC BY 4.0) | `python scripts/fetch_admdong.py` | `data/processed/jeju-admdong.geojson` | 지역 공백 불가 |
-| 경찰관서 | 생활안전지도 | `python scripts/fetch_jeju_data.py` | `data/processed/safemap-police.geojson` | 근처 파출소 없음 |
+| 경찰관서 | 생활안전지도(공공누리 4유형, 제출 ZIP에 없음) | `python scripts/fetch_jeju_data.py --police-only` 후 ingest(data/README.md) | `data/processed/safemap-police.geojson` | 근처 파출소 없음 |
 
 키 연결 확인: `python scripts/check_api_keys.py`
 

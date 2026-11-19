@@ -7,6 +7,7 @@ Then ingest each CSV with its spec in data/specs/ (python -m jeju_lifepath.data.
 import csv
 import json
 import time
+import sys
 import urllib.parse
 from http import HTTPStatus
 from pathlib import Path
@@ -100,7 +101,12 @@ def write_csv(name: str, rows: list[dict]) -> None:
 
 def main() -> None:
     env = load_env(ENV_FILE)
+    if "--police-only" not in sys.argv:  # 제출 ZIP에는 경찰관서만 빠져 있어 그것만 받을 때(SAFEMAP_API_KEY만 필요)
+        fetch_hub(env)
+    fetch_police(env)
 
+
+def fetch_hub(env: dict) -> None:
     write_csv("hub_accident_hotspots", hub_rows(hub_base(env, "JEJU_HUB_ACCIDENT_DATA_ID")))
 
     # 와이파이는 날짜별 스냅샷이 쌓여 있어 가장 최근 날짜 하나만 받는다
@@ -116,6 +122,8 @@ def main() -> None:
     # 카카오 로컬 API 결과는 저장 금지(운영정책) → 주소만 저장, 좌표는 공공 지오코더로
     write_csv("hub_pharmacies", pharmacies)
 
+
+def fetch_police(env: dict) -> None:
     items, page = [], 1
     while True:  # 한 번에 최대 1,000건
         url = SAFEMAP + "IF_0036?" + urllib.parse.urlencode(
