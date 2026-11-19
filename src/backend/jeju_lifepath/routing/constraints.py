@@ -36,13 +36,15 @@ class MobilityPolicy:
     verified_only: bool
 
 
-# Policy for each declared mobility profile. WHEELCHAIR is PASS-only per
-# REQUIREMENTS §4.3 / §8. STROLLER avoids confirmed stairs but may traverse
-# UNKNOWN edges (result then UNVERIFIED). Overridable via ConstraintProfile.from_request.
+# Policy for each declared mobility profile. WHEELCHAIR and STROLLER avoid confirmed
+# barriers (stairs, OSM wheelchair=no) but may traverse UNKNOWN edges; the result is then
+# UNVERIFIED and says how much of it is unverified. WHEELCHAIR was PASS-only (REQUIREMENTS §4.3),
+# but only ~1% of Jeju ways are verified, so it almost never routed; user decision 2026-11-19:
+# route with a warning. Callers can still demand PASS-only via require_verified_accessibility.
 DEFAULT_MOBILITY_POLICIES: Mapping[MobilityProfile, MobilityPolicy] = MappingProxyType(
     {
         MobilityProfile.STANDARD: MobilityPolicy(requires_step_free=False, verified_only=False),
-        MobilityProfile.WHEELCHAIR: MobilityPolicy(requires_step_free=True, verified_only=True),
+        MobilityProfile.WHEELCHAIR: MobilityPolicy(requires_step_free=True, verified_only=False),
         MobilityProfile.STROLLER: MobilityPolicy(requires_step_free=True, verified_only=False),
     }
 )

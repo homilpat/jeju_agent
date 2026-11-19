@@ -22,7 +22,9 @@ from jeju_lifepath.routing.cost import (
 )
 from jeju_lifepath.schemas import (
     DETOUR_RATIO_POLICY_MAX,
+    ClosureStatus,
     MobilityProfile,
+    Passability,
     RoadEdge,
     RoutePreference,
     RouteRequest,
@@ -33,6 +35,7 @@ from jeju_lifepath.schemas import (
 # shortcut: algorithm budget, not an empirical value; set from a timing run on the real
 # Jeju graph (G2) and report how often the fallback fires.
 MAX_CANDIDATES = 200
+CLOSURE_UNCHECKED = "공사·통제 정보는 확인하지 못했습니다."
 
 # Usual outdoor walking pace of healthy adults 1.31 m/s (meta-analysis, Murtagh et al. 2021,
 # Sports Med., PMID 33030707). Manual wheelchair self-selected 1.04 m/s (170 experienced
@@ -169,7 +172,8 @@ def find_route(
         caveats.append("허용한 우회 범위 안에서 더 나은 경로를 찾지 못해 최단 경로를 안내합니다.")
     unknown = evaluation.unknown_edge_ids
     speed = SPEED_M_PER_MIN[req.mobility_profile]
-    return _result(chosen, ws, imputed, speed, baseline.length_m, caveats, unknown)
+    step_free = evaluation.profile.requires_step_free
+    return _result(chosen, ws, imputed, speed, baseline.length_m, caveats, unknown, step_free)
 
 
 def _no_route(verified_only: bool) -> RouteResult:
@@ -195,13 +199,20 @@ def _result(  # noqa: PLR0917 - private helper, call site is single
     base_len: float,
     caveats: list[str],
     unknown_ids: frozenset[str],
+    step_free: bool = False,
 ) -> RouteResult:
     length = sum(e.length_m for e in edges)
     unverified = tuple(e.edge_id for e in edges if e.edge_id in unknown_ids)
-    if unverified:
-        caveats.append(
-            f"통행 가능 여부가 확인되지 않은 구간 {len(unverified)}곳이 포함되어 있습니다."
-        )
+    # 미확인 이유를 나눠 적는다: 통제 정보 없음(모든 길 공통, 화면은 시작 안내로 한 번만 보여 줌)과
+    # 휠체어·유모차 통행 미확인(그 사용자만, 조각 개수가 아닌 길이 비율)
+    if any(e.closure_status is not ClosureStatus.OPEN for e in edges if e.edge_id in unknown_ids):
+        caveats.append(CLOSURE_UNCHECKED)
+    if step_free:
+        share = sum(e.length_m for e in edges if e.accessibility is Passability.UNKNOWN) / length
+        if share > 0:
+            caveats.append(
+                f"휠체어·유모차로 지나갈 수 있는지 확인되지 않은 길이 전체의 약 {max(1, round(share * 100))}%입니다."
+            )
     names = tuple(_WEIGHTS)
     breakdown = {
         n: _lw_mean([(getattr(e, n), e.length_m) for e in edges if getattr(e, n) is not None])

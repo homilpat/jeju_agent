@@ -553,7 +553,12 @@ def routes(ctx, p, origin, dest, mobility, r, version, pref: RoutePreference) ->
             version,
             routes=r,
         )
-    note = f" {who} 조건을 지키는 길만 골랐단다." if who else ""
+    note = (
+        " 계단은 피했지만, 휠체어로 다닐 수 있는지 확인된 길은 일부뿐이란다. "
+        "길마다 확인 안 된 비율을 보고, 턱이나 경사는 조심하렴."
+        if mobility == MobilityProfile.WHEELCHAIR
+        else f" {who} 조건을 지키는 길만 골랐단다." if who else ""
+    )
     chosen = next((x for x in r["routes"] if x["kind"] == pref.value and x["found"]), None)
     lead = (
         f"{head} {chosen['title']}를 지도에 그려 줬단다. 다른 길과도 비교해 보렴."

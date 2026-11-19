@@ -80,11 +80,21 @@ def test_unknown_closure_marks_unverified():
     assert r.unverified_edge_ids == ("B-C",)
 
 
-def test_wheelchair_is_pass_only():
+def test_wheelchair_unverified_route_is_flagged():
+    # 휠체어: 확인 안 된 길도 쓰되(사용자 결정 2026-11-19) 결과에 확인 안 된 비율을 알린다
     g = build_graph({"BC": {"accessibility": UNKNOWN}})
     r = find_route(g, req(mobility_profile="WHEELCHAIR", detour_ratio=0.5))
-    assert r.route_edge_ids == ("A-B", "B-E", "E-F", "F-C")
-    assert r.status is RouteStatus.OK
+    assert r.route_edge_ids == ("A-B", "B-C") and r.status is RouteStatus.UNVERIFIED
+    assert any("휠체어·유모차로 지나갈 수 있는지 확인되지 않은 길이 전체의 약 50%" in c for c in r.caveats)
+    # 확인된 길만 요구하면 예전처럼 PASS 구간만
+    r = find_route(g, req(mobility_profile="WHEELCHAIR", detour_ratio=0.5, require_verified_accessibility=True))
+    assert r.route_edge_ids == ("A-B", "B-E", "E-F", "F-C") and r.status is RouteStatus.OK
+
+
+def test_wheelchair_never_uses_confirmed_barrier():
+    g = build_graph({"BC": {"accessibility": BLOCK}})
+    r = find_route(g, req(mobility_profile="WHEELCHAIR", detour_ratio=0.5))
+    assert "B-C" not in r.route_edge_ids
 
 
 def test_stairs_do_not_block_standard_pedestrian():
@@ -95,7 +105,7 @@ def test_stairs_do_not_block_standard_pedestrian():
 
 def test_no_verified_route():
     g = build_graph({"AB": {"accessibility": UNKNOWN}, "AD": {"accessibility": UNKNOWN}})
-    r = find_route(g, req(mobility_profile="WHEELCHAIR"))
+    r = find_route(g, req(mobility_profile="WHEELCHAIR", require_verified_accessibility=True))
     assert r.status is RouteStatus.NO_FEASIBLE_ROUTE
     assert r.route_edge_ids == ()
 

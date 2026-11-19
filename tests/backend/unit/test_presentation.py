@@ -45,10 +45,12 @@ def test_registry_source_names_are_used():
 
 def test_unverified_and_failure_text():
     g = build_graph({"BC": {"closure_status": "UNKNOWN"}})
-    assert "확인되지 않았습니다" in render_route(find_route(g, req()))
+    # 통제 정보 미확인은 시작 화면 공통 안내로 한 번만(경로마다 반복하지 않음)
+    assert render_route(find_route(g, req())).startswith("경로를 찾았습니다.")
+    assert "통제" in START_NOTICE
     blocked = build_graph({"AB": {"accessibility": "UNKNOWN"}, "AD": {"accessibility": "UNKNOWN"}})
     assert "찾지 못했습니다" in render_route(
-        find_route(blocked, req(mobility_profile="WHEELCHAIR"))
+        find_route(blocked, req(mobility_profile="WHEELCHAIR", require_verified_accessibility=True))
     )
 
 

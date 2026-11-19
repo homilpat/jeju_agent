@@ -49,7 +49,7 @@ def _request(**over):
         ({}, STANDARD),
         ({"avoid_stairs": True}, STEP_FREE),
         ({"mobility_profile": MobilityProfile.STROLLER}, STEP_FREE),
-        ({"mobility_profile": MobilityProfile.WHEELCHAIR}, VERIFIED),
+        ({"mobility_profile": MobilityProfile.WHEELCHAIR}, STEP_FREE),  # 확인 안 된 길은 경고와 함께(2026-11-19)
         ({"require_verified_accessibility": True}, VERIFIED),
     ],
 )

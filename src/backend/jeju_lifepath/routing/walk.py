@@ -171,10 +171,18 @@ class WalkRouter:
         network: WalkNetwork,
         zones: AccidentZones | None,
         cctv: CctvPoints | None = None,
+        verified: frozenset[str] = frozenset(),
     ):
         self.net = network
         self.zones = zones
         self.cctv = cctv
+        # 구간별 휠체어 통행: 무장애 조사 코스가 지난 길(verified)과 OSM 태그. 나머지는 확인 안 됨
+        self.access = {s: Passability.PASS for s in verified}
+        for s in network.segments:
+            if s.wheelchair in ("yes", "designated"):
+                self.access[s.seg_id] = Passability.PASS
+            elif s.wheelchair == "no":
+                self.access[s.seg_id] = Passability.BLOCK
         self._lock = threading.Lock()  # 기준 거리 계산 때 전체 그래프에 임시 노드를 붙였다 뗀다
 
     def _attach(self, snap: Snap, name: str) -> tuple[str, list[_Piece], tuple[float, float]]:
@@ -271,7 +279,7 @@ class WalkRouter:
         스냅 거리(점에서 길까지)는 경로 길이와 같은 기준으로 넣지 않는다."""
         policy = DEFAULT_MOBILITY_POLICIES[mobility]
         src = self.net.snap(*source)
-        # 기준 보행망에는 통행 확인(PASS) 정보가 없어(계단만 앎) 확인 구간만 쓰는 휠체어는 갈 곳이 없다(§4.3)
+        # shortcut: 거리표는 계단만 피한다(OSM 휠체어 불가 54곳은 경로 비교에서만 막음), 일정 거리 차이가 문제되면 flat 그래프에 반영
         if src is None or src.distance_m > MAX_SNAP_M or policy.verified_only:
             return [None] * len(targets)
         key = "flat" if policy.requires_step_free else "length"
@@ -417,8 +425,10 @@ class WalkRouter:
                         length_m=length,
                         traffic_exposure=exposure,
                         cctv_index=cctv,
-                        # 계단은 확인된 장벽, 나머지는 확인 안 됨(일반 보행자에겐 둘 다 통과)
-                        accessibility=Passability.BLOCK if p.steps else Passability.UNKNOWN,
+                        # 계단·휠체어 불가 표시는 확인된 장벽(일반 보행자에겐 통과). 조각은 원래 구간 번호로 찾는다
+                        accessibility=Passability.BLOCK
+                        if p.steps
+                        else self.access.get(p.pid.split("~")[0], Passability.UNKNOWN),
                         source_ids=sources,
                     )
                 )

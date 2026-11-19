@@ -132,10 +132,18 @@ def default_router():
 
     if not OSM_FILE.exists():
         return None
+    net = WalkNetwork.from_file(OSM_FILE)
+    verified = frozenset()
+    if BARRIER_FREE_FILE.exists():  # 무장애 조사 코스가 지난 길은 휠체어 통행 확인된 길로 본다
+        from jeju_lifepath.data.barrier_free import verified_segment_ids  # noqa: PLC0415
+
+        places = json.loads(BARRIER_FREE_FILE.read_text(encoding="utf-8"))
+        verified = verified_segment_ids(places, net.segments)
     return WalkRouter(
-        WalkNetwork.from_file(OSM_FILE),
+        net,
         AccidentZones.from_file(PROCESSED_DIR / "accident-zones.geojson"),
         CctvPoints.from_csvs(CCTV_FILES),
+        verified,
     )
 
 

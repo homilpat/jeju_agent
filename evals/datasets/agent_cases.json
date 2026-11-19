@@ -116,9 +116,9 @@
     {
       "id": "H03-wheelchair-route-holdout",
       "split": "holdout",
-      "turns": [{"text": "휠체어로 격자동에서 격자마을까지 가는 길"}],
-      "expect": {"intent": "route", "status": "infeasible", "required_tools": ["compare_routes"], "trip_changes": 0},
-      "_history": "2026-11-18 첫 실행에서 기대값 ok로 실패. §4.3(휠체어는 통행 확인 구간만)상 합성 격자(접근성 미확인)에서는 경로 없음이 맞아 기대값을 infeasible로 고침. 코드는 바꾸지 않음."
+      "turns": [{"text": "휠체어로 격자동에서 격자마을까지 가는 길"}, {"text": "최단 경로로"}],
+      "expect": {"intent": "route", "status": "ok", "required_tools": ["compare_routes"], "trip_changes": 0},
+      "_history": "2026-11-18 첫 실행에서 기대값 ok로 실패. §4.3(휠체어는 통행 확인 구간만)상 합성 격자(접근성 미확인)에서는 경로 없음이 맞아 기대값을 infeasible로 고침. 코드는 바꾸지 않음. 2026-11-19 사용자 결정으로 휠체어도 확인 안 된 길을 경고와 함께 안내하게 바뀌어 기대값을 ok로, 경로 유형을 먼저 묻는 흐름(§6)에 맞춰 버튼 답 한 턴을 더함."
     },
     {
       "id": "H04-injection-holdout",

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from pathlib import Path
 
@@ -271,3 +272,38 @@ def build(hub: Path, portal: Path, hwp_dir: Path, hwp_text, zip_dir: Path | None
         )
         out.append(p)
     return sorted(out, key=lambda p: p["name"])
+
+
+def verified_segment_ids(places: list[dict], segments, within_m: float = 10, share: float = 0.95) -> frozenset[str]:
+    """무장애 조사자가 실제로 걸은 GPS 코스 위의 보행 구간(길이의 share 이상이 코스 within_m 안).
+    계단·경사·턱 주의 지점 within_m 안에 조금이라도 닿는 구간은 통째로 뺀다(구간 단위로만 표시하므로
+    일부만 빼면 그 장애물까지 확인된 길이 된다).
+    share는 근거 없는 값: 구간 끝이 코스 밖으로 조금 나가는 GPS 오차만 봐준다.
+    shortcut: 위경도를 제주 위도 기준 평면 미터로 근사(오차 수 m), 넓은 지역에 쓰면 투영 좌표로 바꿀 것"""
+    import shapely  # noqa: PLC0415 - 경로 엔진을 쓸 때만
+    from shapely.geometry import LineString, Point  # noqa: PLC0415
+
+    k = math.cos(math.radians(33.4))
+
+    def xy(lon: float, lat: float) -> tuple[float, float]:
+        return lon * 111_320 * k, lat * 110_574
+
+    zones = [LineString([xy(lon, lat) for lat, lon in p["track"]]).buffer(within_m)
+             for p in places if len(p.get("track") or []) >= 2]  # noqa: PLR2004
+    if not zones:
+        return frozenset()
+    bad = [Point(xy(x["lon"], x["lat"])).buffer(within_m) for p in places for x in p["points"]
+           if BARRIER_WORDS.search(x["info"] + x["label"])]
+    zone = shapely.union_all(zones)
+    barrier = shapely.union_all(bad) if bad else None
+    lines = [LineString([xy(*c) for c in s.coords]) for s in segments]
+    tree = shapely.STRtree(lines)
+    out = set()
+    for z in zones:
+        for i in tree.query(z, predicate="intersects"):
+            line = lines[i]
+            if barrier is not None and line.intersects(barrier):
+                continue
+            if line.length > 0 and line.intersection(zone).length >= share * line.length:
+                out.add(segments[i].seg_id)
+    return frozenset(out)

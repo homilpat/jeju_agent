@@ -5,17 +5,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from jeju_lifepath.routing.optimizer import CLOSURE_UNCHECKED
 from jeju_lifepath.schemas import RoutePreference, RouteResult, RouteStatus
 
 # Shown once on the start screen; never repeated per route.
 START_NOTICE = (
     "안전환경 우선 경로는 교통사고가 자주 난 구역을 덜 지나도록 고른 길입니다. "
-    "실제 안전을 보장하지는 않으니 참고용으로 이용해 주세요."
+    "실제 안전을 보장하지는 않으니 참고용으로 이용해 주세요. 공사·통제 정보는 반영하지 못했습니다."
 )
 
 STATUS_TEXT = {
     RouteStatus.OK: "경로를 찾았습니다.",
-    RouteStatus.UNVERIFIED: "경로를 찾았지만, 일부 구간은 통행 가능 여부가 확인되지 않았습니다.",
+    RouteStatus.UNVERIFIED: "경로를 찾았습니다.",  # 확인 못 한 점은 아래 줄(caveats)과 시작 화면 안내가 말함
     RouteStatus.NO_FEASIBLE_ROUTE: "조건에 맞는 경로를 찾지 못했습니다.",
     RouteStatus.DATA_UNAVAILABLE: "필요한 정보가 없어 경로를 안내할 수 없습니다.",
 }
@@ -65,7 +66,8 @@ def render_route(res: RouteResult, source_names: Mapping[str, str] | None = None
     if res.provenance:
         names = dict.fromkeys(_source_name(s, source_names or {}) for s in res.provenance)
         lines.append("자료 출처: " + ", ".join(names))
-    lines += [f"· {c}" for c in res.caveats]
+    # 통제 미확인은 모든 길에 같은 말이라 시작 화면(START_NOTICE)에서 한 번만 말한다
+    lines += [f"· {c}" for c in res.caveats if c != CLOSURE_UNCHECKED]
     return "\n".join(lines)
 
 

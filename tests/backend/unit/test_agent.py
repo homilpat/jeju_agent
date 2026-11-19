@@ -618,9 +618,11 @@ def test_kakao_results_not_stored(world):
 
 
 # codex 검토(2026-11-18) 지적 회귀 테스트 ---------------------------------
-def test_wheelchair_itinerary_needs_verified_paths(world):
+def test_wheelchair_itinerary_warns_unverified_paths(world):
+    # 2026-11-19 사용자 결정: 휠체어도 확인 안 된 길로 짜되, 계단만 피했고 나머지는 모른다고 알린다
     r = say(world, "휠체어로 격자동에서 빵집 한 곳 들르고 돌아오는 코스 짜줘")
-    assert r["status"] == "infeasible" and r["trip_id"] is None
+    assert r["status"] == "ok" and r["itinerary"]["stops"]
+    assert any("계단 말고 다른 장애물은" in m for m in r["itinerary"]["notes"])
 
 
 def test_far_from_road_candidate_skipped(world):
@@ -1772,3 +1774,20 @@ def test_guessed_mobility_survives_other_question_and_bad_value(world):
     out.pop("ask"); out.pop("mobility")
     r = say(world, "지금 출발", agent=agent, conv=conv)
     assert r["message"] == "유모차 쓰는 길로 찾아줄까?"  # 앞 질문에 답해도 짐작한 이동 조건은 묻는다
+
+
+def test_verified_segments_follow_surveyed_track_minus_barriers():
+    from jeju_lifepath.data.barrier_free import verified_segment_ids  # noqa: PLC0415
+    from jeju_lifepath.geo.osm import Segment  # noqa: PLC0415
+
+    on = Segment("on", "a", "b", ((126.5000, 33.5), (126.5010, 33.5)), 93.0)
+    off = Segment("off", "c", "d", ((126.5000, 33.501), (126.5010, 33.501)), 93.0)  # 약 110m 북쪽
+    stairs = Segment("st", "e", "f", ((126.5020, 33.5), (126.5030, 33.5)), 93.0)
+    track = [[33.5, 126.4995], [33.5, 126.5035]]  # (위도, 경도)
+    places = [{"track": track, "points": [
+        {"lat": 33.5, "lon": 126.5025, "label": "", "info": "계단 2칸이라 이용 어려움"}]}]
+    assert verified_segment_ids(places, [on, off, stairs]) == {"on"}
+    # 주의 지점이 구간 가운데에 있으면 나머지가 코스 위여도 구간 전체를 확인된 길로 보지 않는다
+    long = Segment("long", "g", "h", ((126.5015, 33.5), (126.5035, 33.5)), 186.0)
+    assert "long" not in verified_segment_ids(places, [long])
+    assert verified_segment_ids([{"track": [], "points": []}], [on]) == frozenset()

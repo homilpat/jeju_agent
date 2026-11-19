@@ -60,6 +60,7 @@ class Segment:
     coords: tuple[tuple[float, float], ...]  # (lon, lat)
     length_m: float
     steps: bool = False  # highway=steps: 계단이 확인된 구간(휠체어·유모차 차단)
+    wheelchair: str | None = None  # OSM wheelchair 태그(yes·designated·limited·no), 없으면 None
 
 
 def build_segments(elements: list[dict]) -> list[Segment]:
@@ -91,7 +92,8 @@ def build_segments(elements: list[dict]) -> list[Segment]:
             length = sum(haversine_m(*p, *q) for p, q in pairwise(piece))
             if length > 0:
                 segments.append(
-                    Segment(f"osm{w['id']}_{k}", str(nodes[a]), str(nodes[b]), piece, length, steps)
+                    Segment(f"osm{w['id']}_{k}", str(nodes[a]), str(nodes[b]), piece, length, steps,
+                            w["tags"].get("wheelchair"))
                 )
                 k += 1
 
