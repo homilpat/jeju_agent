@@ -4,6 +4,8 @@
   "deadline_s": 41,
   "max_tool_calls": 22,
   "max_llm_calls": 2,
+  "agent_loop": true,
+  "max_loop_steps": 6,
   "max_replans": 2,
   "max_same_failure": 2,
   "max_retries": 2,

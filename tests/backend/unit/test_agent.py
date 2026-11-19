@@ -1878,3 +1878,9 @@ def test_barrier_free_match_rejects_attached_facility(world):
     r = say(world, "휠체어로 격자동에서 갈 만한 곳 한 곳 들르고 돌아오는 코스", agent=agent)
     assert not (r.get("itinerary") or {}).get("stops")
     assert "한라공원 주차장" not in json.dumps(r, ensure_ascii=False)
+
+
+def test_time_equal_to_now_means_leaving_now(world):
+    p, _ = _llm_parse(world, {"intent": "plan_create", "themes": ["빵집"],
+                              "depart_at": NOW.strftime("%Y-%m-%dT%H:%M:00+09:00")}, "빵집 코스")
+    assert p.slots.depart_at is None and p.ambiguities == []

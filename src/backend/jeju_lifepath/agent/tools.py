@@ -102,6 +102,23 @@ class OlleIn(BaseModel):
     near: Point | None = None
 
 
+class KnowledgeGraphIn(BaseModel):
+    """무장애 여행 지식그래프 질의 조건(LLM이 구성). 그래프가 실제 자료로만 답한다."""
+
+    model_config = ConfigDict(extra="forbid")
+    name_contains: list[str] = Field(default_factory=list, max_length=10)
+    recommended_for: list[str] = Field(default_factory=list, max_length=8)
+    without_companion: bool = False
+    has_point: list[str] = Field(default_factory=list, max_length=8)
+    disabled_toilet: bool | None = None
+    disabled_parking: bool | None = None
+    max_barrier_points: int | None = Field(default=None, ge=0)
+    has_course: bool | None = None
+    near: Point | None = None
+    within_km: float | None = Field(default=None, gt=0, le=100)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
 class BarrierFreeIn(BaseModel):
     """무장애 여행지. name이 있으면 그 장소의 상세, 없으면 near에서 가까운 곳."""
 

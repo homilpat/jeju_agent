@@ -61,7 +61,7 @@ def as_messages(turns: list[str], calls: list[dict], final: str) -> list[dict]:
     return msgs
 
 
-def run_case(case: dict, llm, tmp: Path) -> dict:
+def run_case(case: dict, llm, tmp: Path, policy: Policy | None = None) -> dict:
     store_module.SCRYPT_N = 2**10
     store = Store(tmp / f"{case['id']}.db")
     uid = store.create_user("evaluser", "password123")
@@ -69,7 +69,7 @@ def run_case(case: dict, llm, tmp: Path) -> dict:
     for kind in case.get("inject", {}).get("kakao_fail", []):
         kakao.fail_queue.append(ToolError(kind, "injected"))
     agent = Agent(
-        store, make_context(kakao=kakao), llm=llm, clock=lambda: NOW, sleep=lambda _s: None
+        store, make_context(policy, kakao=kakao), llm=llm, clock=lambda: NOW, sleep=lambda _s: None
     )
     conv, calls, statuses, versions, resp = None, [], [], [], None
     turn_seconds, turn_calls, first_stops = [], [], None
@@ -138,6 +138,10 @@ def run_case(case: dict, llm, tmp: Path) -> dict:
         )
     if "missing_contains" in exp:  # 꼭 들어가야 하는 안내(예: 응급실 답의 119)
         hard["missing_contains"] = any(exp["missing_contains"] in m for m in resp.get("missing_data", []))
+    if "answer_contains" in exp:  # 답(문장·카드·일정)에 꼭 나와야 하는 장소(복합 조건 해결)
+        shown = [resp["message"], *(p["name"] for p in resp.get("places") or []),
+                 *(s["name"] for s in (resp.get("itinerary") or {}).get("stops", []))]
+        hard["answer_contains"] = any(exp["answer_contains"] in x for x in shown)
     if "min_attempts" in exp:
         hard["min_attempts"] = len(trace) >= exp["min_attempts"]
     return {
@@ -158,6 +162,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--llm", choices=["none", "real"], default="none")
     ap.add_argument("--repeat", type=int, default=1, help="실 LLM 비결정성 확인용 반복 횟수")
+    ap.add_argument("--mode", choices=["loop", "parse"], default="loop",
+                    help="loop: LLM이 도구를 고르는 루프 / parse: 한 번 해석 + 의도별 처리(기존)")
     args = ap.parse_args()
     llm, llm_note = None, "NOT_RUN (규칙 해석만)"
     if args.llm == "real":
@@ -173,7 +179,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:  # 윈도우: 열린 DB 파일
         for rep in range(args.repeat):
             for case in cases:
-                row = run_case(case, llm, Path(tmp) / f"r{rep}")
+                row = run_case(case, llm, Path(tmp) / f"r{rep}", Policy.load(agent_loop=args.mode == "loop"))
                 row["repeat"] = rep
                 rows.append(row)
     commit = subprocess.run(
@@ -190,6 +196,9 @@ def main() -> int:
         "dataset": "evals/datasets/agent_cases.json",
         "world": "synthetic-grid (tests/backend/fixtures/agent_world.py)",
         "llm": llm_note,
+        "mode": args.mode if llm is not None and hasattr(llm, "chat") else "parse",
+        "mean_turn_seconds": round(sum(sum(r["turn_seconds"]) / len(r["turn_seconds"]) for r in rows) / len(rows), 2),
+        "mean_tool_calls": round(sum(r["tool_calls"] for r in rows) / len(rows), 2),
         "real_kakao": "NOT_RUN",
         "cases": len(rows),
         "agentevals_superset_pass": sum(r["agentevals_superset"] for r in rows),

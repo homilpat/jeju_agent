@@ -14,12 +14,14 @@ import shapely
 
 from jeju_lifepath.agent.models import Policy, ToolError
 from jeju_lifepath.agent.parse import THEME_CATEGORY, is_kind
+from jeju_lifepath.agent import kg
 from jeju_lifepath.data.barrier_free import name_key
 from jeju_lifepath.agent.tools import (
     AreaAccessIn,
     CompareRoutesIn,
     MatrixIn,
     BarrierFreeIn,
+    KnowledgeGraphIn,
     NearbyIn,
     OlleIn,
     ResolveLocationIn,
@@ -224,6 +226,17 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
         )
         return {"places": ranked[: a.limit], "detail": False, "source": "public"}
 
+    graph = {}
+
+    def knowledge_graph(a: KnowledgeGraphIn) -> dict:
+        if a.within_km is not None and a.near is None:
+            raise ToolError("invalid_args", "within_km needs a location")
+        if "g" not in graph:
+            graph["g"] = kg.build(ctx.barrier_free)
+        found = kg.query(graph["g"], near=(a.near.lon, a.near.lat) if a.near else None,
+                         **a.model_dump(exclude={"near"}))
+        return {"places": found, "source": "public"}
+
     def compare_routes(a: CompareRoutesIn) -> dict:
         from jeju_lifepath.presentation.route import render_plan  # noqa: PLC0415
 
@@ -413,6 +426,12 @@ def build_tools(ctx: AgentContext) -> dict[str, ToolSpec]:
                 "약국·화장실·와이파이·경찰관서·심야약국·수유실·응급실 가까운 곳",
                 NearbyIn,
                 find_nearby_facilities,
+            ),
+            ToolSpec(
+                "knowledge_graph",
+                "무장애 여행 지식그래프 질의(조건에 맞는 무장애 여행지, 공공 조사 자료만)",
+                KnowledgeGraphIn,
+                knowledge_graph,
             ),
             ToolSpec(
                 "barrier_free_places",

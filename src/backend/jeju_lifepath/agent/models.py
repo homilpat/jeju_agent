@@ -115,6 +115,9 @@ class Policy:
     max_stops: int
     trace_retention_days: int
     llm: dict = field(default_factory=dict)
+    # LLM 중심 Agent 루프(도구 호출·관찰·재계획). 끄면 한 번 해석 + 의도별 처리(제한 모드)
+    agent_loop: bool = False
+    max_loop_steps: int = 6
 
     @classmethod
     def load(cls, path: Path = POLICY_FILE, **overrides) -> Policy:

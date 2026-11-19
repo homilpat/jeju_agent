@@ -415,6 +415,27 @@ def access_bits(x: dict) -> list[str]:
     return bits
 
 
+def kg_places(ctx, results: list[dict], version) -> dict:
+    """지식그래프 질의 결과(공공 무장애 조사 자료) 카드."""
+    def detail(x):
+        bits = [f"약 {_distance(x['distance_m'])}" if x["distance_m"] is not None else None,
+                "장애인 화장실 있음" if x["disabled_toilet"] == "있음" else None,
+                "장애인 주차장 있음" if x["disabled_parking"] == "있음" else None,
+                f"계단·경사 주의 지점 {x['barrier_points']}곳" if x["barrier_points"] else "주의 지점 기록 없음",
+                "조사자가 걸은 코스 있음" if x["has_course"] else None]
+        return " · ".join(filter(None, bits))
+
+    return _from(
+        # 공공자료 이름이라 문장에 넣는다(대화 기록에 남아 "거기 중 첫 번째"를 알아듣게)
+        ctx, "ok", f"조건에 맞는 무장애 여행지 {len(results)}곳이란다: {', '.join(x['name'] for x in results)}.",
+        version,
+        places=[{"name": x["name"], "detail": detail(x), "address": x["address"], "url": None,
+                 "lat": x["lat"], "lon": x["lon"]} for x in results],
+        evidence=_evidence(BARRIER_FREE_SOURCE),
+        missing_data=["무장애 조사는 2019~2021년 자료라 지금과 다를 수 있단다. 가기 전에 한 번 더 확인해 보렴."],
+    )
+
+
 def barrier_free(ctx, p, at, r, version) -> dict:
     """무장애 여행지: 가까운 곳 목록 또는 한 곳 상세(접근성 조사 자료)."""
     found = r["places"]

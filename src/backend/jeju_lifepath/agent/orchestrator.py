@@ -21,7 +21,8 @@ import shapely
 
 from jeju_lifepath.agent import present
 from jeju_lifepath.agent.itinerary import legs, plan_greedy, validate
-from jeju_lifepath.agent.llm import llm_parse
+from jeju_lifepath.agent import loop
+from jeju_lifepath.agent.llm import _read, _say, _talk, llm_parse
 from jeju_lifepath.agent.models import ParseResult, Slots, ToolError
 from jeju_lifepath.agent.parse import LODGING, SEOUL, THEME_CATEGORY, is_kind, parse_rules
 from jeju_lifepath.agent.services import AgentContext, build_tools
@@ -53,11 +54,15 @@ MOBILITY_INTENTS = ("route", "route_poi", "plan_create", "plan_modify", "area_ga
 
 
 class NeedInput(Exception):  # noqa: N818 - 흐름 제어용(오류 아님)
-    def __init__(self, questions: list[dict], pending: dict | None = None, replies: list | None = None):
+    def __init__(self, questions: list[dict], pending: dict | None = None, replies: list | None = None,
+                 missing: bool = False):
         super().__init__("needs_input")
         self.questions = questions
         self.pending = pending
         self.replies = replies  # None이면 질문의 버튼 답으로 정함
+        # 빠진 정보(출발지·개수·경로 유형). 루프에서는 먼저 LLM에 돌려줘 사용자가 이미 말했는지 보게 한다.
+        # 확인·승인 질문(고친 이름, 휠체어 짐작, 저장)과 후보 고르기는 False: 곧바로 사용자에게
+        self.missing = missing
 
 
 class Conflict(Exception):
@@ -277,6 +282,9 @@ class Agent:
             talk = state.get("history", []) if history is None else history
             # LLM에는 카카오 응답(가게 이름·주소·좌표)을 보내지 않는다(카카오 운영정책, 데브톡 152791).
             # 대화 기록과 일정에는 카카오 자료가 없다(test_kakao_results_not_stored)
+            if saved_parse is None and self._use_loop(text, state):
+                draft = self._loop(text, state, talk, ctx, budget, present.screen_note(screen, trip))
+                return self._publish(ctx, draft)
             parsed = saved_parse or self._parse(
                 text, {**state, "history": talk}, bool(trip), budget,
                 present.screen_note(screen, trip),
@@ -499,6 +507,143 @@ class Agent:
         return self._close(ctx, draft, "completed", state)
 
     # interpretation -------------------------------------------------------
+    # LLM 중심 루프 ----------------------------------------------------------
+    def _use_loop(self, text: str, state: dict) -> bool:
+        """도구 호출을 지원하는 LLM이면 루프. 버튼 답·후보 번호 고르기는 우리가 만든 질문의 답이라
+        앞 요청을 그대로 이어 가는 기존 길로(빠르고 틀리지 않음)."""
+        if not (self.policy.agent_loop and hasattr(self.llm, "chat")):
+            return False
+        if text.strip() in state.get("pending_replies", []):
+            return False
+        options = state.get("options")
+        return not (options and _option_pick(text, len(options["items"])) is not None)
+
+    def _loop(self, text: str, state: dict, talk: list, ctx, budget: Budget, note: str) -> dict:
+        """LLM이 도구를 고르고 Harness가 검증·실행해 관찰을 돌려준다. LLM이 답을 끝내거나 예산이 다할 때까지."""
+        now = self.clock()
+        msgs = [{"role": "system", "content": loop.LOOP_PROMPT}]
+        # 대화 기록에는 카카오 자료가 없다(저장할 때 뺌)
+        msgs += [{"role": "user" if h.get("role") == "user" else "assistant", "content": str(h.get("text", ""))}
+                 for h in talk[-40:]]
+        msgs.append({"role": "user", "content": f"[지금 시각: {now.strftime('%Y-%m-%d %H:%M')} (서울)]\n"
+                                                f"[사용자가 보고 있는 화면: {note}]\n{text}"})
+        context = _talk(talk) + note  # 장소 이름 확인(대화·화면에 나온 이름인지)
+        draft = None
+        shown_parse = None
+        for _ in range(self.policy.max_loop_steps):
+            ctx["runner"].check()  # 취소·시간 예산(도구와 같은 기준)
+            budget.llm_calls += 1
+            try:
+                msg = self.llm.chat(msgs, loop.SCHEMAS)
+            except ToolError as e:
+                log.info("llm loop failed: %s", e.kind)
+                raise NeedInput([{"text": LLM_STUCK}], state.get("pending"),
+                                state.get("pending_replies", [])) from None
+            calls = msg.get("tool_calls") or []
+            if not calls and ctx.get("pending_missing"):  # 앞 화면보다 아직 못 푼 질문이 먼저
+                raise ctx["pending_missing"]  # 빠진 정보를 채우지 못함: 원래 질문으로 사용자에게
+            if not calls:
+                final = _say(msg.get("content"))
+                if draft is None:
+                    ctx["parse"] = ParseResult(intent="chat", reply=final or LLM_STUCK, parser=self.llm.mode,
+                                               reference_time=now.isoformat())
+                    return present.chat(ctx, ctx["parse"], self.policy.version)
+                if final and final not in draft["message"]:
+                    draft["message"] = f"{draft['message']} {final}"
+                ctx["parse"] = shown_parse  # 게시(_publish)는 이 화면을 만든 해석 기준으로
+                return draft
+            msgs.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
+            for c in calls:
+                # 도구가 돌려준 공공자료 이름(지식그래프)도 대화에 나온 이름으로 본다(지어낸 이름 아님)
+                context += " " + " ".join(ctx.get("seen_names", []))
+                obs, shown = self._loop_tool(c.get("function") or {}, text, context, now, ctx)
+                if shown is not None:
+                    draft, shown_parse = shown, ctx["parse"]
+                msgs.append({"role": "tool", "tool_call_id": c.get("id", ""),
+                             "content": json.dumps(obs, ensure_ascii=False)})
+        if draft is None:  # 예산 안에 답을 끝내지 못함
+            raise ctx.get("pending_missing") or NeedInput([{"text": LLM_STUCK}], None)
+        ctx["parse"] = shown_parse
+        return draft
+
+    def _loop_tool(self, fn: dict, text: str, context: str, now, ctx) -> tuple[dict, dict | None]:
+        """도구 하나 실행 -> (LLM에 줄 관찰, 화면 응답 또는 None). 잘못된 인자·실패는 구조화된 실패로 돌려준다."""
+        name = fn.get("name")
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except ValueError:
+            args = None
+        if name not in loop.INTENT or not isinstance(args, dict):
+            return {"error": "invalid_call", "detail": "모르는 도구이거나 인자가 JSON 객체가 아님"}, None
+        if name == "ask_user":
+            if ctx.get("pending_missing"):  # 도구가 만든 질문이 있으면 그것으로(버튼·앞 요청 이어가기)
+                raise ctx["pending_missing"]
+            q = _say(args.get("question"))
+            if not q:
+                return {"error": "invalid_args", "detail": "질문 문장이 비었거나 영어 코드가 섞임"}, None
+            opts = [o for o in (_say(x) for x in (args.get("options") or [])[:4]) if o]
+            raise NeedInput([{"text": q, **({"options": [{"label": o, "reply": o} for o in opts]} if opts else {})}],
+                            None)
+        try:
+            return self._loop_run(name, args, text, context, now, ctx)
+        except NeedInput as q:
+            if not q.missing or name in ctx.setdefault("fed_back", set()):
+                raise
+            ctx["fed_back"].add(name)
+            ctx["pending_missing"] = q
+            return {"status": "needs_more_info", "missing": [x["text"] for x in q.questions],
+                    "hint": "사용자가 이미 말한 정보면 인자를 채워 다시 부르고, 아니면 ask_user"}, None
+
+    def _loop_run(self, name: str, args: dict, text: str, context: str, now, ctx) -> tuple[dict, dict | None]:
+        if name == "knowledge_graph":
+            return self._kg_tool(args, text, context, now, ctx)
+        if name == "save_trip" and "저장" not in text:
+            # LLM 판단만으로 여행을 저장·덮어쓰지 않는다(위험한 상태 변경은 사용자 승인)
+            raise NeedInput([{"text": "이 일정을 내 여행에 저장할까?",
+                              "options": [{"label": "응, 저장해줘", "reply": "내 여행에 저장해줘"}]}], None)
+        names = args.pop("barrier_free_names", None)
+        try:
+            p = _read({**args, "intent": loop.INTENT[name]}, text, context, now, self.llm.mode)
+        except (ValueError, TypeError, AttributeError) as e:
+            return {"error": "invalid_args", "detail": type(e).__name__}, None
+        ctx["parse"] = p
+        ctx["bf_names"] = names if isinstance(names, list) else None
+        try:
+            shown = self._dispatch(p, ctx)
+        except ToolError as e:  # 다른 도구·조건으로 다시 해 볼 수 있게 이유를 돌려준다
+            return {"error": e.kind, "tool": name}, None
+        ctx.pop("pending_missing", None)
+        return loop.observe(shown, present.used_kakao(ctx["runner"].trajectory)), shown
+
+    def _kg_tool(self, args: dict, text: str, context: str, now, ctx) -> tuple[dict, dict | None]:
+        if args.get("within_km") and not args.get("location_text"):
+            args["use_current_location"] = True  # 거리 조건은 기준 위치가 있어야 함
+        filters = {k: v for k, v in args.items() if k not in ("location_text", "use_current_location")}
+        if args.get("location_text") or args.get("use_current_location"):
+            where = {k: args[k] for k in ("location_text", "use_current_location") if k in args}
+            ctx["parse"] = _read({**where, "intent": "barrier_free"}, text, context, now, self.llm.mode)
+            try:
+                self._ask_first(ctx["parse"])  # 대화에 없는 장소 이름은 확인부터
+                at = self._point(ctx["parse"], ctx)
+            except NeedInput as q:
+                # 답은 버튼 이어가기(검색 조건 없는 기존 길)가 아니라 루프로: LLM이 같은 조건으로 다시 찾는다
+                q.pending, q.replies = None, []
+                raise
+            filters["near"] = {"lon": at["lon"], "lat": at["lat"]}  # 좌표는 도구에만, LLM에는 안 보냄
+        try:
+            found = ctx["runner"].call("knowledge_graph", filters)["places"]
+        except ToolError as e:
+            return {"error": e.kind, "tool": "knowledge_graph"}, None
+        ctx.setdefault("seen_names", []).extend(x["name"] for x in found)
+        # 공공 조사 자료라 이름까지 LLM에 보낸다(카카오 자료 아님). 기준 위치 좌표는 보내지 않는다
+        cols = ("name", "distance_m", "disabled_toilet", "disabled_parking", "barrier_points", "has_course",
+                "recommended_for", "nearby")
+        obs = {"results": [{k: x[k] for k in cols} for x in found]}
+        if not found:
+            return {**obs, "note": "조건에 맞는 곳이 없음. 조건을 줄여 다시 해 볼 수 있음"}, None
+        ctx.setdefault("parse", ParseResult(intent="barrier_free", parser=self.llm.mode))
+        return obs, present.kg_places(ctx, found, self.policy.version)
+
     def _parse(
         self, text: str, state: dict, has_trip: bool, budget: Budget, screen_note: str = ""
     ) -> ParseResult:
@@ -579,6 +724,15 @@ class Agent:
 
     # dispatch -----------------------------------------------------------
     def _dispatch(self, p: ParseResult, ctx: dict) -> dict:
+        self._ask_first(p)
+        if p.intent == "unsupported" or (
+            p.slots.transport in ("car", "bus", "taxi") and p.intent in ("route", "plan_create")
+        ):
+            return present.unsupported(ctx, p, self.policy.version)
+        return self._dispatch_handler(p, ctx)
+
+    def _ask_first(self, p: ParseResult) -> None:
+        """실행 전에 사용자에게 물을 것(빠진 조건, 몸이 불편할 때, 짐작한 이동 조건, 대화에 없는 이름)."""
         if p.ambiguities:
             raise NeedInput([{"text": a} for a in p.ambiguities], p.model_dump(mode="json"))
         # 이동이 힘들다고만 했으면 길·일정을 짜기 전에 어떤 도움이 필요한지 묻는다(짐작해서 정하지 않음)
@@ -599,10 +753,8 @@ class Agent:
             ask = [{"text": f"{name} 말하는 거니?", "options": [{"label": "응, 맞아", "reply": "응, 맞아"}]}]
             # 고친 이름은 이미 칸에 들어 있어서 "응, 맞아"면 남은 확인을 거쳐 그대로 이어간다
             raise NeedInput(ask, p.model_copy(update={"confirm": rest}).model_dump(mode="json"))
-        if p.intent == "unsupported" or (
-            p.slots.transport in ("car", "bus", "taxi") and p.intent in ("route", "plan_create")
-        ):
-            return present.unsupported(ctx, p, self.policy.version)
+
+    def _dispatch_handler(self, p: ParseResult, ctx: dict) -> dict:
         handler = {
             "guide": self._guide,
             "route": self._route,
@@ -658,7 +810,7 @@ class Agent:
         if ctx.get("map_view"):  # 사용자가 보고 있는 지도 가운데(답에 "지도 가운데"라고 밝힌다)
             c = ctx["map_view"]["center"]
             return {"lon": c["lon"], "lat": c["lat"], "label": "지도 가운데"}
-        raise NeedInput([{"text": ask, "needs_location": True}], p.model_dump(mode="json"))
+        raise NeedInput([{"text": ask, "needs_location": True}], p.model_dump(mode="json"), missing=True)
 
     @staticmethod
     def _without(p: ParseResult, slot: str) -> dict:
@@ -736,12 +888,17 @@ class Agent:
     def _barrier_free_candidates(self, ctx, near: dict) -> list[dict]:
         """일정 후보: 가까운 무장애 여행지(공공 조사 자료)를 이름으로 카카오에서 찾아 보통 장소처럼 쓴다.
         저장·수정·다시 열기는 카카오 장소와 같은 길(검색어 = 여행지 이름). 같은 이름이 없으면 뺀다."""
-        r = ctx["runner"].call(
-            "barrier_free_places",
-            {"near": {"lon": near["lon"], "lat": near["lat"]}, "limit": BARRIER_FREE_CANDIDATES},
-        )
+        names = ctx.get("bf_names")
+        if names:  # 지식그래프로 고른 여행지(LLM이 넘김): 그 이름들만, 공공 자료에서 바로
+            want = {name_key(n) for n in names}
+            picked = [x for x in self.ctx.barrier_free if name_key(x["name"]) in want][:BARRIER_FREE_CANDIDATES]
+        else:
+            picked = ctx["runner"].call(
+                "barrier_free_places",
+                {"near": {"lon": near["lon"], "lat": near["lat"]}, "limit": BARRIER_FREE_CANDIDATES},
+            )["places"]
         out = []
-        for bf in r["places"]:
+        for bf in picked:
             name = bf["name"][:40]
             # 다시 열 때와 같은 검색(이름만, 카카오 정확도 순)으로 찾는다. 조사 위치 근처만.
             # "산지천갤러리와산짓물공원"처럼 두 곳을 묶은 이름은 못 찾으면 앞 이름으로 한 번 더
@@ -834,7 +991,7 @@ class Agent:
         saved_pref = ctx["state"]["prefs"].get("route_preference")
         pref = p.slots.route_preference or (RoutePreference(saved_pref) if saved_pref else None)
         if pref is None:
-            raise NeedInput([present.route_preference_question()], p.model_dump(mode="json"))
+            raise NeedInput([present.route_preference_question()], p.model_dump(mode="json"), missing=True)
         dest = self._point(p, ctx, text_slot="destination_text")
         mobility = self._mobility(p, ctx)
         prefer_cctv = bool(
@@ -1021,7 +1178,7 @@ class Agent:
                 }
             )
         if questions:  # 관련 질문을 한 번에 묶어 묻는다(AG-107)
-            raise NeedInput(questions, p.model_dump(mode="json"))
+            raise NeedInput(questions, p.model_dump(mode="json"), missing=True)
         start = self._point(p, ctx)
         ctx["start_label"] = start["label"]
         end = start if s.round_trip else self._point(p, ctx, text_slot="destination_text")

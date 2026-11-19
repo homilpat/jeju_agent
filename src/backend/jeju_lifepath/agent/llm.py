@@ -17,7 +17,7 @@ import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from pydantic import ValidationError
@@ -124,11 +124,17 @@ class OpenAICompatibleLLM:
         self._open = opener
 
     def complete(self, system: str, user: str) -> str:
-        body = {
-            "model": self.model,
-            "temperature": 0,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        }
+        msg = self._post([{"role": "system", "content": system}, {"role": "user", "content": user}])
+        return msg.get("content") or ""
+
+    def chat(self, messages: list[dict], tools: list[dict]) -> dict:
+        """도구 호출 대화 한 걸음: 답 메시지({content, tool_calls})."""
+        return self._post(messages, tools)
+
+    def _post(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
+        body = {"model": self.model, "temperature": 0, "messages": messages}
+        if tools:
+            body["tools"] = tools
         if self.reasoning_effort:
             body["reasoning_effort"] = self.reasoning_effort
         req = urllib.request.Request(
@@ -150,9 +156,12 @@ class OpenAICompatibleLLM:
         except (urllib.error.URLError, OSError):
             raise ToolError("transient", "llm network") from None
         try:
-            return data["choices"][0]["message"]["content"] or ""
+            msg = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError):
             raise ToolError("invalid_response", "llm shape") from None
+        if not isinstance(msg, dict):
+            raise ToolError("invalid_response", "llm shape")
+        return msg
 
 
 def _classify_http(code: int, retry_after: str | None) -> ToolError:
@@ -174,6 +183,21 @@ class MockLLM:
 
     def complete(self, system: str, user: str) -> str:
         return self._reply(user)
+
+
+class MockChatLLM:
+    """시험용 도구 호출 LLM: step(messages)가 답 메시지({content, tool_calls})를 돌려준다."""
+
+    mode = "mock"
+
+    def __init__(self, step: Callable[[list[dict]], dict]):
+        self._step = step
+
+    def chat(self, messages: list[dict], tools: list[dict]) -> dict:
+        return self._step(messages)
+
+    def complete(self, system: str, user: str) -> str:
+        raise ToolError("invalid_response", "loop mock has no single-shot parse")
 
 
 def _json_block(text: str) -> dict:
@@ -219,8 +243,10 @@ def _when(value, now: datetime) -> str | None:
     if at is None:
         raise ValueError(ASK_TIME)  # 시각을 말했는데 못 읽었으면 조건 없이 짜지 않고 묻는다
     at = at.replace(tzinfo=SEOUL) if at.tzinfo is None else at  # 시간대를 빼먹으면 서울 시각으로 봄
-    if at <= now:
+    if at <= now - timedelta(minutes=1):
         raise ValueError(ASK_PAST)
+    if at <= now:  # 지금과 같은 분: '지금 출발'을 시각으로 적은 것(조건 없음과 같다)
+        return None
     return at.astimezone(SEOUL).isoformat()
 
 
