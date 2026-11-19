@@ -1,61 +1,114 @@
-# JEJU LifePath AI (jeju_agent)
+# 설문대할망 AI 길잡이 (JEJU LifePath AI)
 
-제주 공공데이터 기반 보행 경로·생활편의·지역 인프라 분석 AI Agent.
-핵심 원칙: **하나의 보행도로 그래프 + 공통 도로구간(`edge_id`) 지표 + 하나의 통합 CA-MOR 경로 엔진.**
+제주데이터허브 자료로 걷는 여행자와 주민에게 "걸어서 갈 수 있는 길·쉴 곳·도움받을 곳"을 대화 한 번으로 찾아 주는 AI Agent.
+LLM이 목표를 보고 도구를 스스로 골라 부르고, 결과를 보며 다시 계획한다. 계산은 보행망 엔진과 지식그래프가 실제 데이터로만 한다.
 
-- 요구사항: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)
-- 아키텍처: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- 구현 상태·게이트 기록: [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)
-- 작업 로그: [HACKATHON_WORK_LOG.md](HACKATHON_WORK_LOG.md)
+- 기획서: [docs/PROPOSAL.md](docs/PROPOSAL.md) (Word: `docs/PROPOSAL.docx`)
+- 운영·구조: [docs/AGENT_RUNBOOK.md](docs/AGENT_RUNBOOK.md)
+- 데이터 출처·전처리: [docs/DATA_AVAILABILITY.md](docs/DATA_AVAILABILITY.md)
+- 검증 결과: [docs/VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md)
+- 정한 값과 근거: [docs/development/open-decisions.md](docs/development/open-decisions.md)
 
-> **현재 단계: G0 완료 · G1 진행 중(미통과).** 데이터 수집·검증 파이프라인은 구현됐지만
-> 공식 제주 데이터는 아직 확보·적용되지 않았다([data/README.md](data/README.md)). 테스트의 모든 그래프는
-> `synthetic:` 출처의 **DEMO용 가상 데이터**다. CA-MOR 경로 탐색은 가상 그래프에서만 동작하며(잠정 가중치), Agent·UI는 미구현이다.
+## 주요 기능
 
-## 저장소 구조 (모노레포)
+| 기능 | 이렇게 물으면 |
+|---|---|
+| 근처 시설(화장실·약국·와이파이·파출소·공공심야약국·수유실·응급실) | "여기 근처 화장실 어디야?" |
+| 걷는 길 세 경로(최단·균형·안전환경 우선), 휠체어·유모차 | "제주시청에서 동문시장까지 걸어서" |
+| 가는 길에 들르기 | "공항에서 동문시장 가는 길에 약국" |
+| 걷기 일정 만들기·고치기·저장 | "동문시장에서 빵집 두 곳이랑 카페 들르고 6시까지 돌아오는 코스" |
+| 무장애 여행지·지식그래프 복합 조건 | "휠체어 타는 엄마랑 장애인 화장실 있는 해변 추천해줘" |
+| 올레 코스, 지역 공백 | "올레 7코스 알려줘", "이도2동 약국 먼 곳" |
+| 차·버스·택시 | 걷기 전용이라 카카오맵 길찾기로 넘기고, 걷는 길은 버튼으로 제안 |
 
-```text
-src/
-  backend/jeju_lifepath/      # Python 엔진 (설치 패키지)
-    schemas/                  # RoadEdge, RouteRequest, RouteResult, 공통 enum/좌표 타입
-    geo/                      # PedestrianGraph, geodesy, 분석기(Feature) 인터페이스
-    routing/                  # 통행 제약 엔진(B01), CA-MOR 비용·경로 탐색(B02/B03)
-    validation/               # 경로 결과 재검증
-    presentation/             # 결과 → 사용자 한국어 문구 (내부값 미노출)
-    data/                     # 데이터 레지스트리, CSV 커넥터, 좌표 정규화, ingest/G1 gate CLI
-  frontend/                   # 지도·채팅 UI (G10, 미구현)
-data/                         # raw/·processed/(git 제외), specs/, registry.json
-tests/
-  backend/{unit,fixtures}/    # 백엔드 테스트 + 가상 그래프 fixture
-  frontend/                   # 프론트엔드 테스트 (G10, 미구현)
-docs/
-```
+## 실행 환경
 
-## 개발 환경 설치
+- Windows 10/11 또는 Linux, CPU만(GPU·로컬 LLM 불필요). 센터 PC(i7-8700 / 32GB)에서 실행 가능
+- Python 3.12 이상, Node.js 20 이상(화면 빌드에만)
+- 인터넷: LLM API, 카카오 API, 생활안전지도 WMS
 
-요구: Python ≥ 3.12 (CPU만으로 동작, 외부 API 불필요).
+## 설치와 실행
 
 ```bash
+# 1) 파이썬 패키지 (버전은 pyproject.toml·uv.lock에 고정)
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"            # 의존성 버전은 pyproject.toml에 고정
-cp .env.example .env               # G0는 키가 필요 없음. 실제 키는 절대 커밋 금지
+.venv/Scripts/activate              # Linux: source .venv/bin/activate
+pip install -e ".[dev]"             # 평가까지: pip install -e ".[dev,eval]"
+
+# 2) 환경변수
+cp .env.example .env                # 아래 표의 값을 채운다
+
+# 3) 화면 빌드
+cd src/frontend && npm ci && npm run build && cd ../..
+
+# 4) 자료 준비 (아래 "자료 준비" 표)
+
+# 5) 서버 실행
+uvicorn jeju_lifepath.api.app:app --port 8000
 ```
 
-## 테스트 및 정적 검사
+브라우저에서 `http://127.0.0.1:8000` → 회원가입 → 첫 화면이 AI 길잡이 대화다.
+
+## 환경변수 (`.env`)
+
+| 이름 | 쓰임 | 받는 곳 | 없으면 |
+|---|---|---|---|
+| `LLM_API_KEY` | Agent의 LLM(Meta Model API, muse-spark-1.3, OpenAI 호환) | 제출물의 평가용 키(사용 한도 설정, 평가 후 폐기) | 규칙 해석 제한 모드 |
+| `KAKAO_REST_API_KEY` | 장소·주소 검색(서버) | [카카오 디벨로퍼스](https://developers.kakao.com/) 앱 → REST API 키 | 장소 검색 기능 안내 문구로 끝남 |
+| `KAKAO_JS_KEY` | 화면 지도 | 같은 앱의 JavaScript 키(플랫폼에 `http://127.0.0.1:8000` 등록) | 지도가 안 보임 |
+| `SAFEMAP_API_KEY` | 범죄주의구간 지도 겹치기 | [생활안전지도 오픈API](https://www.safemap.go.kr/) | 겹쳐 보기만 꺼짐 |
+| `DATA_GO_KR_API_KEY` | 사고 다발지역 자료 받기(스크립트) | [공공데이터포털](https://www.data.go.kr/) 일반 인증키 | 안전환경 경로의 사고 지표 없음 |
+| `JEJU_DATAHUB_API_KEY`, `JEJU_HUB_*_DATA_ID` | 허브 와이파이 등 받기(스크립트) | [제주데이터허브](https://www.jejudatahub.net/) 마이페이지 → 프로젝트 관리 | 그 자료만 없음 |
+| `LLM_BASE_URL`, `LLM_MODEL`, `AGENT_LLM=off` | 다른 OpenAI 호환 제공자로 바꾸기, LLM 끄기(선택) | — | `configs/agent_policy.json`의 값 |
+
+실제 키는 저장소·제출물에 넣지 않는다(평가용 LLM 키만 대회 규칙에 따라 예외).
+
+## 자료 준비
+
+원본·가공 자료는 저장소에 없다(`data/private/`, `data/processed/`는 git 제외). 아래 순서로 받는다. 상세는 [docs/DATA_AVAILABILITY.md](docs/DATA_AVAILABILITY.md).
+
+| 자료 | 출처(이용조건) | 받는 법 | 놓는 곳 | 없으면 |
+|---|---|---|---|---|
+| 제주 보행망 | OpenStreetMap(ODbL, 출처 표시) | `python scripts/check_osm_coverage.py --download` | `data/private/osm/jeju_highways.json` | 길찾기·일정·지역 공백 불가 |
+| 허브 LINK 4종: 공공심야약국(1063)·모유수유시설(1165)·응급의료기관(1058)·올레코스(1236) | 제주데이터허브 → 공공데이터포털(제한 없음) | `python scripts/fetch_hub_links.py` (키 불필요) | `data/private/hub_link/` | 그 시설·올레 안내 없음 |
+| 무장애여행정보: 허브 "무장애" 272건(CSV·한글 문서·압축) + 공공데이터포털 | 제주데이터허브(로그인 후 내려받기), 공공데이터포털 | 허브: 로그인 → "무장애" 검색 → 각 자료 첨부 받기(목록 `data/specs/barrier_free_hub_manifest.csv`) / 포털: `python scripts/fetch_barrier_free.py` → 묶기: `pip install -e ".[data]"` 후 `python scripts/build_barrier_free.py` | `data/private/barrier_free_hub/`, `barrier_free_hub_files/`, `barrier_free_zip/`, `barrier_free/` → `data/private/barrier_free.json` | 무장애 여행지·지식그래프·휠체어 확인 길 없음 |
+| 공공와이파이(720)·사고다발지(493) | 제주데이터허브 | `python scripts/fetch_jeju_data.py` 후 `python -m jeju_lifepath.data.ingest` (스펙 `data/specs/`) | `data/processed/hub-*.geojson` | 와이파이 안내 없음 |
+| CCTV(허브 510, 전국 CCTV 표준데이터) | 제주데이터허브, 공공데이터포털 | 각 사이트에서 CSV 내려받기 | `data/private/CCTV정보.csv`, `CCTV정보_제주특별자치도.csv` | 안전환경 경로의 CCTV 지표 없음 |
+| 공중화장실 표준데이터 | 공공데이터포털 | CSV 내려받기 | `data/private/공중화장실정보_제주특별자치도.csv` | 근처 화장실 없음 |
+| 교통사고 다발지역 | 한국도로교통공단·전국 표준데이터(공공데이터포털) | `python scripts/fetch_accident_zones.py` (`DATA_GO_KR_API_KEY`) | `data/processed/accident-zones.geojson` | 안전환경 경로의 사고 지표 없음 |
+| 행정동 경계 | 통계청 SGIS, 가공 vuski/admdongkor(CC BY 4.0) | `python scripts/fetch_admdong.py` | `data/processed/jeju-admdong.geojson` | 지역 공백 불가 |
+| 경찰관서 | 생활안전지도 | `python scripts/fetch_jeju_data.py` | `data/processed/safemap-police.geojson` | 근처 파출소 없음 |
+
+키 연결 확인: `python scripts/check_api_keys.py`
+
+## 테스트와 평가
 
 ```bash
-python -m pytest                   # 전체 테스트 (tests/backend, tests/frontend)
-python -m pytest tests/backend     # 백엔드만
-ruff check .                       # lint
-ruff format --check .              # 포맷 검사 (docs/ 는 제외)
+python -m pytest -q                                       # 자동 테스트(합성 세계, 키 불필요)
+python evals/run_agent_evals.py                           # 도구 호출 평가(규칙 해석, 키 불필요)
+python evals/run_agent_evals.py --llm real --mode loop    # 실 LLM 루프(사용료 발생)
+python evals/run_agent_evals.py --llm real --mode parse   # 비교용: 한 번 해석 + 의도별 처리
+python evals/run_quality_evals.py --llm real --judge codex  # 품질 평가(DeepEval·openevals, Codex 채점)
 ```
 
-uv 사용 시 한 번에: `powershell -ExecutionPolicy Bypass -File scripts/check.ps1` (sync + ruff + pytest)
+promptfoo 공격 평가는 `evals/promptfoo/README.md`.
 
-## 데이터 원칙
+## 제약사항
 
-- 실제 데이터와 가상 데이터는 `source_ids`로 구분한다. 테스트 fixture는 `synthetic:` 접두어와
-  `DEMO` caveat을 반드시 가진다.
-- `None` 지표는 "위험 0"이 아니라 "미확인"이다. 접근성·폐쇄 상태의 기본값은 `UNKNOWN`이다.
-- API Key, 개인 위치, GPS 이력은 커밋하지 않는다 (`.env`는 `.gitignore` 대상).
+- 걷기 전용이다. 차·버스·택시 경로는 카카오맵 길찾기로 넘긴다(앱 안 차 경로·택시 요금 없음).
+- 휠체어 통행이 확인된 길은 제주 보행 구간의 약 0.9%뿐이라, 휠체어 길은 확인 안 된 길 비율을 경고와 함께 안내한다.
+- 무장애 자료는 2019~2021년 조사, 시설 영업 여부는 확인하지 못한다. 공사·통제 정보는 반영하지 않는다.
+- 카카오 운영정책에 따라 카카오 결과(장소 이름·주소·좌표)는 저장하지 않고 외부 LLM에 보내지 않는다.
+- LLM 루프 응답은 요청당 평균 약 10초(실측)다.
+- 화면과 답은 한국어만 지원한다.
+
+## 출처 표기
+
+- 지도 데이터 © OpenStreetMap contributors (ODbL)
+- 행정동 경계: 통계청 SGIS(공공누리 제1유형)를 vuski/admdongkor가 가공, CC BY 4.0
+- 제주데이터허브, 공공데이터포털, 생활안전지도, 카카오맵·카카오 로컬 API
+
+## AI 활용
+
+- 서비스 안: Meta muse-spark-1.3(요청 해석·도구 선택). 거리·시간·경로 숫자는 만들지 않는다.
+- 개발: Anthropic Claude Code(코드·문서 작성 보조), OpenAI Codex CLI(코드 검토·평가 채점), Google Gemini(설문대할망 캐릭터 그림). 결정과 확인은 참가자가 했다.
