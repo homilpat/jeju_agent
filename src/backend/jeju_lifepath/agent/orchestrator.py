@@ -561,7 +561,7 @@ class Agent:
                                                         "물어야 하면 ask_user 중 하나를 불러라."})
                 continue
             if not calls and ctx.get("pending_missing"):  # 앞 화면보다 아직 못 푼 질문이 먼저
-                raise ctx["pending_missing"]  # 빠진 정보를 채우지 못함: 원래 질문으로 사용자에게
+                raise self._missing_question(ctx)  # 빠진 정보를 채우지 못함: 원래 질문으로 사용자에게
             if not calls:
                 final = _say(msg.get("content"))
                 if draft is None:
@@ -579,12 +579,21 @@ class Agent:
                 obs, shown = self._loop_tool(c.get("function") or {}, text, context, now, ctx)
                 if shown is not None:
                     draft, shown_parse = shown, ctx["parse"]
+                    ctx["loop_draft"] = draft
                 msgs.append({"role": "tool", "tool_call_id": c.get("id", ""),
                              "content": json.dumps(obs, ensure_ascii=False)})
         if draft is None:  # 예산 안에 답을 끝내지 못함
-            raise ctx.get("pending_missing") or NeedInput([{"text": LLM_STUCK}], None)
+            raise self._missing_question(ctx) if ctx.get("pending_missing") else NeedInput([{"text": LLM_STUCK}], None)
         ctx["parse"] = shown_parse
         return draft
+
+    @staticmethod
+    def _missing_question(ctx) -> NeedInput:
+        """못 푼 질문을 사용자에게. 앞서 만든 화면의 말(예: 택시 거절)은 질문 앞에 붙여 잃지 않는다."""
+        q, shown = ctx["pending_missing"], ctx.get("loop_draft")
+        if shown and q.questions and shown["message"] not in q.questions[0]["text"]:
+            q.questions[0] = {**q.questions[0], "text": f"{shown['message']} {q.questions[0]['text']}"}
+        return q
 
     def _loop_tool(self, fn: dict, text: str, context: str, now, ctx) -> tuple[dict, dict | None]:
         """도구 하나 실행 -> (LLM에 줄 관찰, 화면 응답 또는 None). 잘못된 인자·실패는 구조화된 실패로 돌려준다."""
@@ -597,11 +606,14 @@ class Agent:
             return {"error": "invalid_call", "detail": "모르는 도구이거나 인자가 JSON 객체가 아님"}, None
         if name == "ask_user":
             if ctx.get("pending_missing"):  # 도구가 만든 질문이 있으면 그것으로(버튼·앞 요청 이어가기)
-                raise ctx["pending_missing"]
+                raise self._missing_question(ctx)
             q = _say(args.get("question"))
             if not q:
                 return {"error": "invalid_args", "detail": "질문 문장이 비었거나 영어 코드가 섞임"}, None
             opts = [o for o in (_say(x) for x in (args.get("options") or [])[:4]) if o]
+            shown = ctx.get("loop_draft")
+            if shown and shown["message"] not in q:  # 앞서 만든 화면의 말(예: 거절)을 잃지 않게
+                q = f"{shown['message']} {q}"
             raise NeedInput([{"text": q, **({"options": [{"label": o, "reply": o} for o in opts]} if opts else {})}],
                             None)
         try:

@@ -168,3 +168,12 @@ def test_reply_tool_is_a_plain_answer(world):
     llm, seen = script(call("reply", text="반갑단다. 걷는 길을 도와줄게."))
     r = say(world, "안녕", agent=agent_with(world, llm))
     assert r["message"] == "반갑단다. 걷는 길을 도와줄게." and len(seen) == 1
+
+
+def test_refusal_is_kept_when_a_missing_question_follows(world):
+    # 걷는 길을 먼저 시도(출발지 없음) -> 택시 거절 -> 사용자에게 묻기: 거절 문장이 질문과 함께 남아야 함
+    llm, _ = script(call("walking_route", destination_text="격자마을"),
+                    call("cannot_do", unsupported_features=["택시 경로"], transport="taxi"),
+                    call("ask_user", question="어디서 출발하니?"))
+    r = say(world, "택시 타고 격자마을 가는 길", agent=agent_with(world, llm))
+    assert r["status"] == "needs_input" and "도와주지 못한단다" in r["message"]
