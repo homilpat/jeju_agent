@@ -384,8 +384,8 @@ def test_at18_llm_cannot_invent_places(world):
     )
     agent = Agent(world["store"], world["ctx"], llm=llm, clock=lambda: NOW)
     r = say(world, "근처 약국", loc=LOC, agent=agent)
-    assert r["status"] == "ok" and r["interpreter"] == "mock"
-    assert tools_called(agent) == ["find_nearby_facilities"]  # 문장에 없는 '서울역'을 쓰지 않음
+    # 문장에 없는 '서울역'으로 바로 찾지 않고 먼저 묻는다
+    assert r["message"] == "서울역 말하는 거니?" and tools_called(agent) == []
 
 
 def test_at19_llm_failure_asks_again(world):
@@ -1725,3 +1725,46 @@ def test_taxi_refusal_tells_how_to_walk(world):
         {"intent": "unsupported", "transport": "taxi", "unsupported_features": ["택시 이동"]})))
     r = say(world, "택시 타고 격자마을 가는 길 알려줘", agent=agent)
     assert r["status"] == "unsupported" and "'걸어서'라고 말해 주렴" in r["message"]
+
+
+def test_llm_name_not_in_talk_is_always_confirmed(world):
+    # 대화에 없는 이름은 고친 것이든 지어낸 것이든 실행 전에 묻는다(글자 비교 규칙 없음)
+    p, _ = _llm_parse(world, {"intent": "guide", "place_query": "서울역"}, "근처 약국")
+    assert p.slots.place_query == "서울역" and p.confirm == ["서울역"]
+    p, _ = _llm_parse(world, {"intent": "guide", "place_query": "한라공원"}, "한라 공원 설명해줘")
+    assert p.confirm == []  # 띄어쓰기만 다르면 대화에 나온 것
+
+
+def test_llm_guessed_mobility_is_asked_first(world):
+    out = {"intent": "route", "location_text": "격자동", "destination_text": "격자마을", "mobility": "STROLLER"}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    r = say(world, "애기 태우고 격자동에서 격자마을까지 가는 길", agent=agent)
+    assert r["message"] == "유모차 쓰는 길로 찾아줄까?" and tools_called(agent) == []
+    assert [o["reply"] for o in r["questions"][0]["options"]] == ["응, 유모차 길로", "아니, 그냥 걸어서"]
+    conv = r["conversation_id"]
+    assert say(world, "응, 유모차 길로", agent=agent, conv=conv)["message"] == "어떤 길로 안내해 줄까?"
+    say(world, "최단 경로로", agent=agent, conv=conv)
+    assert '"STROLLER"' in json.dumps(agent.last_trajectory)
+    r = say(world, "애기 태우고 격자동에서 격자마을까지 가는 길", agent=agent, conv=conv)
+    assert r["message"] != "유모차 쓰는 길로 찾아줄까?"  # 앞 대화에서 유모차라고 했으니 다시 묻지 않음
+
+
+def test_llm_guessed_mobility_declined(world):
+    out = {"intent": "route", "location_text": "격자동", "destination_text": "격자마을", "mobility": "STROLLER"}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    conv = say(world, "애기 태우고 격자동에서 격자마을까지 가는 길", agent=agent)["conversation_id"]
+    say(world, "아니, 그냥 걸어서", agent=agent, conv=conv)
+    say(world, "최단 경로로", agent=agent, conv=conv)
+    assert '"STANDARD"' in json.dumps(agent.last_trajectory)
+
+
+def test_guessed_mobility_survives_other_question_and_bad_value(world):
+    p, _ = _llm_parse(world, {"intent": "guide", "facility": "toilet", "mobility": ["x"]}, "근처 화장실")
+    assert p.slots.mobility is None and p.ask_mobility is None  # 이상한 값은 버리고 나머지는 살림
+    out = {"intent": "route", "location_text": "격자동", "destination_text": "격자마을", "mobility": "STROLLER",
+           "ask": ["몇 시에 출발하니?"]}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    conv = say(world, "애기 태우고 격자동에서 격자마을까지 가는 길", agent=agent)["conversation_id"]
+    out.pop("ask"); out.pop("mobility")
+    r = say(world, "지금 출발", agent=agent, conv=conv)
+    assert r["message"] == "유모차 쓰는 길로 찾아줄까?"  # 앞 질문에 답해도 짐작한 이동 조건은 묻는다

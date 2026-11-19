@@ -11,8 +11,8 @@ OpenAI 호환 형식으로 응답함(muse-spark-1.3, reasoning_effort=low에서 
 
 from __future__ import annotations
 
-import difflib
 import json
+import logging
 import re
 import urllib.error
 import urllib.request
@@ -24,6 +24,9 @@ from pydantic import ValidationError
 
 from jeju_lifepath.agent.models import Change, ParseResult, Slots, ToolError
 from jeju_lifepath.agent.parse import FACILITIES, SEOUL, THEME_GROUPS, THEMES
+
+log = logging.getLogger(__name__)
+
 
 def _hint(words) -> str:
     return ", ".join(dict.fromkeys(words))
@@ -75,7 +78,7 @@ true|false 칸은 사용자가 이번 말에서 켜거나 끄라고 직접 말�
 지켜야 할 것:
 - 장소 이름 칸에는 대화나 화면에 나온 이름만 쓴다. 지어내지 않는다. "거기", "아까 거"는 앞 대화에서 찾는다.
 - 장소 이름에 오타가 있거나 줄여 말했으면(예: 동문시정 → 동문시장, 일출봉 → 성산일출봉) 바로잡은 정식 이름을 쓴다.
-  맞는지는 도우미가 사용자에게 따로 묻는다. 확실하지 않으면 사용자가 쓴 그대로 둔다.
+  대화에 없는 이름은 도우미가 사용자에게 맞는지 묻는다.
 - 가게·지명 이름 속 글자(예: 동문시장의 '시장')를 장소 종류로 넣지 않는다.
 - 시각은 [지금 시각] 기준으로 계산한다. 오전·오후를 알 수 없으면 정하지 말고 ask에 묻는다.
 - [사용자가 보고 있는 화면]에 지금 일정이 번호와 종류(검색어)로 나온다. "두 번째 곳", "카페 빼줘"를 그 번호로 바꿔 changes에 쓴다.
@@ -83,7 +86,8 @@ true|false 칸은 사용자가 이번 말에서 켜거나 끄라고 직접 말�
 - 일정 고치기에서 어느 장소인지 모르겠으면 ask에 묻는다. 꼭 필요할 때만 묻는다.
 - 출발지·위치가 없다고 묻지 않는다(도우미가 지금 위치를 쓰거나 따로 묻는다).
 - reply는 chat일 때만 쓴다.
-- mobility는 사용자가 휠체어·유모차라고 직접 말했을 때만.
+- mobility는 휠체어·유모차를 직접 말했거나 돌려 말했을 때(예: 애기 태우고, 바퀴 달린 의자, 다리가 불편해 휠체어 타)
+  쓴다. 나이·몸 상태만으로 짐작하지 않는다. 대화에 휠체어·유모차라는 말이 없으면 도우미가 맞는지 묻는다.
 - reply에 날씨·영업 여부·혼잡처럼 확인하지 않은 사실을 단정하지 않는다.
 - reply·ask는 제주 할망처럼 다정한 반말 한두 문장. 예: "걷는 길이랑 일정을 같이 짜 준단다.",
   "어느 정류장 근처니?", "다시 알려 주렴." 영어 코드·괄호·기호를 쓰지 않는다."""
@@ -190,6 +194,8 @@ def _say(value) -> str:
     """LLM이 쓴 사용자용 문장. 내부 값이 섞였으면 버린다."""
     v = value.strip() if isinstance(value, str) else ""
     leaked = LEAK.search(v) or any(w.lower() in INTERNAL_WORDS for w in re.findall(r"[A-Za-z]{2,}", v))
+    if leaked:  # 얼마나 자주 버리는지 보려고 남긴다(문장은 남기지 않음)
+        log.info("llm text dropped: internal words")
     return "" if leaked else v
 
 
@@ -207,6 +213,11 @@ def _when(value, now: datetime) -> str | None:
     if at <= now:
         raise ValueError(ASK_PAST)
     return at.astimezone(SEOUL).isoformat()
+
+
+def present_word(mobility) -> str:
+    """이동 조건이 대화에 나왔는지 볼 낱말. 값이 없거나 모르는 값이면 늘 나온 것으로 본다(빈 문자열)."""
+    return {"WHEELCHAIR": "휠체어", "STROLLER": "유모차"}.get(mobility, "") if isinstance(mobility, str) else ""
 
 
 def _talk(history) -> str:
@@ -244,24 +255,21 @@ def llm_parse(
 
 
 def _read(data: dict, text: str, context: str, now: datetime, mode: str) -> ParseResult:
-    # 장소 이름은 대화·화면에 실제로 나온 것만(지어낸 지명으로 검색하지 않게). 띄어쓰기 차이는 봐준다
+    # 원칙 하나: 대화·화면에 나온 값은 그대로 쓰고, 나오지 않은 값(LLM이 오타를 고치거나 짐작한 값)은
+    # 실행 전에 사용자에게 묻는다(confirm, ask_mobility). 띄어쓰기 차이는 봐준다
     seen = (text + context).replace(" ", "")
-
     confirm: list[str] = []
 
     def grounded(value) -> str | None:
         v = value.strip() if isinstance(value, str) else ""
-        if not v or v.replace(" ", "") in seen:
-            return v or None
-        # 사용자가 쓴 말과 두 글자 넘게 겹치면 오타·줄임말을 고친 것으로 보고 맞는지 묻는다
-        # ("일출봉" -> 성산일출봉, "동문시정" -> 동문시장). 겹치지 않으면 지어낸 이름이라 버림
-        # shortcut: 겹친 글자 수로만 본다, 엉뚱한 곳을 물으면 사용자가 아니라고 하면 됨
-        said = text.replace(" ", "")
-        common = difflib.SequenceMatcher(None, said, v.replace(" ", "")).find_longest_match()
-        if common.size >= 2 and len(v) <= 30 and _say(v):  # noqa: PLR2004
+        if v and v.replace(" ", "") not in seen:
+            if not _say(v):  # 이름 칸에 내부 값이 들어온 것
+                return None
             confirm.append(v)
-            return v
-        return None
+        return v or None
+
+    mobility = data.get("mobility")
+    direct = present_word(mobility) in seen
 
     def kinds(value) -> list[str]:
         words = [w.strip() for w in _as_list(value) if isinstance(w, str) and w.strip()]
@@ -279,7 +287,7 @@ def _read(data: dict, text: str, context: str, now: datetime, mode: str) -> Pars
         "next_day": flag("next_day"),
         "facility": data.get("facility"),
         # 이동 조건은 사용자가 직접 말했을 때만(사람의 특성으로 추정하지 않음, ARCHITECTURE §7)
-        "mobility": data.get("mobility") if ("휠체어" in text or "유모차" in text) else None,
+        "mobility": mobility if direct else None,
         "transport": data.get("transport"),
         "themes": kinds(data.get("themes")),
         "day_themes": [d for d in (kinds(x) for x in _as_list(data.get("day_themes"))) if d][:10],
@@ -338,4 +346,5 @@ def _read(data: dict, text: str, context: str, now: datetime, mode: str) -> Pars
         parser=mode,
         reply=_say(data.get("reply")),
         confirm=list(dict.fromkeys(confirm)),
+        ask_mobility=mobility if mobility in ("WHEELCHAIR", "STROLLER") and not direct else None,
     )

@@ -563,6 +563,7 @@ class Agent:
                 "reference_time": parsed.reference_time,
                 # 앞에서 남은 확인 + 이번 답에서 새로 고친 이름(답에서 고친 이름도 묻는다)
                 "confirm": list(dict.fromkeys([*base.confirm, *parsed.confirm])),
+                "ask_mobility": parsed.ask_mobility or base.ask_mobility,  # 다른 질문에 먼저 답해도 남김
             }
         )
 
@@ -570,6 +571,12 @@ class Agent:
     def _dispatch(self, p: ParseResult, ctx: dict) -> dict:
         if p.ambiguities:
             raise NeedInput([{"text": a} for a in p.ambiguities], p.model_dump(mode="json"))
+        if p.ask_mobility:  # 짐작한 휠체어·유모차는 묻고 나서 쓴다. 답 버튼의 낱말로 규칙 해석이 칸을 채움
+            word = present.MOBILITY_WORD[p.ask_mobility]
+            yes, no = f"응, {word} 길로", "아니, 그냥 걸어서"
+            ask = [{"text": f"{word} 쓰는 길로 찾아줄까?",
+                    "options": [{"label": yes, "reply": yes}, {"label": no, "reply": no}]}]
+            raise NeedInput(ask, p.model_copy(update={"ask_mobility": None}).model_dump(mode="json"))
         if p.confirm:  # 고친 이름은 하나씩 묻는다(버튼 하나로 여러 곳을 승인하지 않게)
             name, rest = p.confirm[0], p.confirm[1:]
             ask = [{"text": f"{name} 말하는 거니?", "options": [{"label": "응, 맞아", "reply": "응, 맞아"}]}]

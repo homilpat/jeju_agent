@@ -83,6 +83,7 @@ class ParseResult(BaseModel):
     parser: Literal["rules", "llm", "mock"] = "rules"
     reply: str = ""  # 잡담·도움말에 LLM이 쓴 답(검사를 통과한 것만)
     confirm: list[str] = Field(default_factory=list)  # 사용자가 쓴 글자와 달라 맞는지 물을 장소 이름
+    ask_mobility: MobilityProfile | None = None  # 돌려 말해 짐작한 이동 조건(맞는지 묻는다)
 
 
 class ToolError(Exception):
