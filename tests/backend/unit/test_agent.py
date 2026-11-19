@@ -1730,7 +1730,8 @@ def test_taxi_refusal_tells_how_to_walk(world):
     agent = Agent(world["store"], world["ctx"], clock=lambda: NOW, llm=MockLLM(lambda _t: json.dumps(
         {"intent": "unsupported", "transport": "taxi", "unsupported_features": ["택시 이동"]})))
     r = say(world, "택시 타고 격자마을 가는 길 알려줘", agent=agent)
-    assert r["status"] == "unsupported" and "'걸어서'라고 말해 주렴" in r["message"]
+    assert r["status"] == "unsupported" and "걸어서 가는 길은 찾아 줄 수 있단다" in r["message"]
+    assert r["questions"][0]["options"] == [{"label": "걸어서 갈게", "reply": "걸어서 갈게"}]
 
 
 def test_llm_name_not_in_talk_is_always_confirmed(world):

@@ -137,7 +137,8 @@ def test_cannot_do_is_consistent_refusal_with_walking_hint(world):
     llm, _ = script(call("cannot_do", unsupported_features=["택시 경로"], transport="taxi"), {"content": ""})
     agent = agent_with(world, llm)
     r = say(world, "택시로 격자마을 가는 길", agent=agent)
-    assert r["status"] == "unsupported" and "'걸어서'" in r["message"] and tools_called(agent) == []
+    assert r["status"] == "unsupported" and tools_called(agent) == []
+    assert r["questions"][0]["options"][0]["label"] == "걸어서 갈게"  # 대안은 버튼으로 제안만
 
 
 def test_unresolved_question_wins_over_earlier_screen(world):

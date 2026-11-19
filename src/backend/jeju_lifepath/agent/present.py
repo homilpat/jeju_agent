@@ -261,7 +261,10 @@ def unsupported(ctx, p, version) -> dict:
     msg = unsupported_line(feats)
     # LLM이 붙인 이름("택시 이동" 등)이 아니라 해석한 이동 수단으로 본다
     if "차량 이동" in feats or p.slots.transport in ("car", "bus", "taxi"):
-        msg += " 걷는 길로 안내받으려면 '걸어서'라고 말해 주렴."
+        # 대안(걷는 길)은 제안만 하고 사용자가 고른다: 동의 없이 바로 계산하지 않음
+        msg += " 걸어서 가는 길은 찾아 줄 수 있단다."
+        walk = [{"text": msg, "options": [{"label": "걸어서 갈게", "reply": "걸어서 갈게"}]}]
+        return _from(ctx, "unsupported", msg, version, questions=walk)
     return _from(ctx, "unsupported", msg, version)
 
 
