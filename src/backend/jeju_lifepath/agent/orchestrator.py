@@ -44,6 +44,7 @@ KAKAO_MAX_RADIUS_M = 20000  # 카카오 로컬 검색 반경 상한(API 규격)
 
 
 LLM_STUCK = "잠깐 생각이 막혔구나, 다시 말해 주렴."
+QUOTA_NOTE = "오늘 AI 사용량이 다 차서 간단한 해석으로 답했단다. 길찾기와 시설 찾기는 그대로 쓸 수 있어."
 # 일정 종류 "무장애 여행지": 후보를 공공 무장애 조사 자료에서 고른다(카카오 분류가 아님)
 BARRIER_FREE_THEME = "무장애 여행지"
 # 잠정값: 후보마다 카카오 이름 검색을 한 번씩 해서 도구 호출 예산(22)을 아낌
@@ -344,6 +345,8 @@ class Agent:
             return self._close(ctx, resp, "failed", state)
 
     def _close(self, ctx, resp, stage, state) -> dict:
+        if self._quota_out():
+            resp.setdefault("warnings", []).append(QUOTA_NOTE)
         # 대화 기록: 새로고침 후 화면 복원과 LLM의 앞 대화(카카오 자료는 넣지 않음). 횟수 제한 없이
         # 보유기간(trace_retention_days)이 지나면 대화째 지운다
         state["history"] = [
@@ -508,11 +511,16 @@ class Agent:
         return self._close(ctx, draft, "completed", state)
 
     # interpretation -------------------------------------------------------
+    def _quota_out(self) -> bool:
+        """오늘 LLM 요금 상한을 다 썼으면 규칙 해석(제한 모드)으로 답한다."""
+        budget = getattr(self.llm, "budget", None)
+        return bool(budget and budget.exhausted())
+
     # LLM 중심 루프 ----------------------------------------------------------
     def _use_loop(self, text: str, state: dict) -> bool:
         """도구 호출을 지원하는 LLM이면 루프. 버튼 답·후보 번호 고르기는 우리가 만든 질문의 답이라
         앞 요청을 그대로 이어 가는 기존 길로(빠르고 틀리지 않음)."""
-        if not (self.policy.agent_loop and hasattr(self.llm, "chat")):
+        if not (self.policy.agent_loop and hasattr(self.llm, "chat")) or self._quota_out():
             return False
         if text.strip() in state.get("pending_replies", []):
             return False
@@ -686,7 +694,7 @@ class Agent:
         now = self.clock()
         # 버튼 답은 우리가 만든 정해진 문장이라 LLM 없이 푼다(빠르고 틀리지 않음)
         button = text.strip() in state.get("pending_replies", [])
-        if self.llm is not None and not button and budget.llm_calls < self.policy.max_llm_calls:
+        if self.llm is not None and not button and not self._quota_out() and budget.llm_calls < self.policy.max_llm_calls:
             budget.llm_calls += 1
             try:
                 return llm_parse(self.llm, text, now, state.get("history", []), screen_note)

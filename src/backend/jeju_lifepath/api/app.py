@@ -31,7 +31,7 @@ from pyproj import Transformer
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from jeju_lifepath.agent.kakao import KakaoLocal
-from jeju_lifepath.agent.llm import OpenAICompatibleLLM
+from jeju_lifepath.agent.llm import DailyBudget, OpenAICompatibleLLM
 from jeju_lifepath.agent.models import Policy, ToolError
 from jeju_lifepath.agent.orchestrator import Agent, Conflict, NotFound, locate_trip
 from jeju_lifepath.agent.services import AgentContext
@@ -481,12 +481,18 @@ def default_llm(policy: Policy):
     if not key or read_env("AGENT_LLM") == "off":
         return None
     cfg = policy.llm
+    limit = read_env("LLM_DAILY_BUDGET_USD")  # 제공자 쪽 한도를 걸 수 없을 때 하루 요금 상한(달러)
+    budget = (
+        DailyBudget(PRIVATE_DIR / "llm_usage.json", float(limit), cfg["price_in_per_m"], cfg["price_out_per_m"])
+        if limit else None
+    )
     return OpenAICompatibleLLM(
         read_env("LLM_BASE_URL") or cfg["base_url"],
         read_env("LLM_MODEL") or cfg["model"],
         key,
         cfg["timeout_s"],
         cfg.get("reasoning_effort"),
+        budget=budget,
     )
 
 

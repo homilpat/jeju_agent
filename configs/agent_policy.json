@@ -20,6 +20,9 @@
     "base_url": "https://api.meta.ai/v1",
     "model": "muse-spark-1.3",
     "timeout_s": 20,
-    "reasoning_effort": "low"
+    "reasoning_effort": "low",
+    "_price_note": "muse-spark-1.3 표준 요금(100만 토큰당 달러, 2026-11-20 확인: eesel.ai·llmreference.com 정리). 하루 상한 계산용",
+    "price_in_per_m": 1.25,
+    "price_out_per_m": 4.25
   }
 }

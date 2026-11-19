@@ -195,3 +195,22 @@ def test_answer_to_llm_question_goes_back_to_llm(world):
     llm2, seen = script(call("find_nearby", facility="night_pharmacy", location_text="격자동"), {"content": ""})
     say(world, "심야약국 찾아줘", agent=agent_with(world, llm2), conv=r["conversation_id"])  # 버튼 답
     assert seen and "격자동" in json.dumps(seen[0], ensure_ascii=False)  # LLM이 앞 대화를 보고 이어 감
+
+
+def test_daily_budget_counts_real_tokens_and_falls_back(world, tmp_path):
+    from jeju_lifepath.agent.llm import DailyBudget  # noqa: PLC0415
+
+    day = {"d": "2026-11-20"}
+    b = DailyBudget(tmp_path / "u.json", 0.01, 1.25, 4.25, today=lambda: day["d"])
+    b.add({"prompt_tokens": 4000, "completion_tokens": 400})  # 0.005 + 0.0017
+    assert not b.exhausted() and round(b.spent(), 4) == 0.0067
+    b.add({"prompt_tokens": 4000, "completion_tokens": 400})
+    assert b.exhausted()
+    day["d"] = "2026-11-21"
+    assert not b.exhausted()  # 날짜가 바뀌면 새로
+    day["d"] = "2026-11-20"
+    llm, seen = script(call("find_nearby", facility="pharmacy", use_current_location=True))
+    llm.budget = b
+    r = say(world, "근처 약국 어디야", loc=LOC, agent=agent_with(world, llm))
+    assert not seen  # 상한을 넘으면 LLM을 부르지 않고 규칙 해석으로 답함
+    assert r["status"] == "ok" and any("AI 사용량이 다 차서" in w for w in r["warnings"])

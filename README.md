@@ -54,6 +54,7 @@ uvicorn jeju_lifepath.api.app:app --port 8000
 | 이름 | 쓰임 | 받는 곳 | 없으면 |
 |---|---|---|---|
 | `LLM_API_KEY` | Agent의 LLM(Meta Model API, muse-spark-1.3, OpenAI 호환) | 제출물의 평가용 키(사용 한도 설정, 평가 후 폐기) | 규칙 해석 제한 모드 |
+| `LLM_DAILY_BUDGET_USD` | LLM 하루 요금 상한(달러, 실제 토큰으로 계산). 평가용은 5 | 제출물의 `.env`에 들어 있음 | 상한 없음 |
 | `KAKAO_REST_API_KEY` | 장소·주소 검색(서버) | [카카오 디벨로퍼스](https://developers.kakao.com/) 앱 → REST API 키 | 장소 검색 기능 안내 문구로 끝남 |
 | `KAKAO_JS_KEY` | 화면 지도 | 같은 앱의 JavaScript 키(플랫폼에 `http://127.0.0.1:8000` 등록) | 지도가 안 보임 |
 | `SAFEMAP_API_KEY` | 범죄주의구간 지도 겹치기 | [생활안전지도 오픈API](https://www.safemap.go.kr/) | 겹쳐 보기만 꺼짐 |

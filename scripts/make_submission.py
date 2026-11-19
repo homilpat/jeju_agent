@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-ALLOWED = ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")
+ALLOWED = ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_DAILY_BUDGET_USD")
 
 
 def eval_env_text(text: str) -> str:

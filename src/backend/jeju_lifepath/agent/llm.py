@@ -16,6 +16,7 @@ import logging
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -104,6 +105,34 @@ class LLM(Protocol):
     def complete(self, system: str, user: str) -> str: ...
 
 
+class DailyBudget:
+    """하루 LLM 요금 상한(제공자 쪽 한도를 걸 수 없을 때). 응답의 실제 토큰 수로 요금을 계산해 서울 날짜별로
+    파일에 쌓는다(서버를 다시 켜도 이어서 셈). 넘으면 그날은 LLM을 부르지 않는다."""
+
+    def __init__(self, path: Path, limit_usd: float, price_in_per_m: float, price_out_per_m: float,
+                 today: Callable[[], str] = lambda: datetime.now(SEOUL).date().isoformat()):
+        self.path, self.limit = path, limit_usd
+        self.price_in, self.price_out = price_in_per_m, price_out_per_m
+        self._today = today
+
+    def spent(self) -> float:
+        try:
+            d = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return 0.0
+        return float(d.get("usd", 0)) if d.get("date") == self._today() else 0.0
+
+    def exhausted(self) -> bool:
+        return self.spent() >= self.limit
+
+    def add(self, usage: dict | None) -> None:
+        if not isinstance(usage, dict):
+            return
+        cost = (usage.get("prompt_tokens", 0) * self.price_in + usage.get("completion_tokens", 0) * self.price_out) / 1e6
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"date": self._today(), "usd": round(self.spent() + cost, 6)}), encoding="utf-8")
+
+
 class OpenAICompatibleLLM:
     mode = "llm"
 
@@ -115,6 +144,7 @@ class OpenAICompatibleLLM:
         timeout_s: float,
         reasoning_effort: str | None = None,
         opener: Callable = urllib.request.urlopen,
+        budget: DailyBudget | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -122,6 +152,7 @@ class OpenAICompatibleLLM:
         self.timeout_s = timeout_s
         self.reasoning_effort = reasoning_effort
         self._open = opener
+        self.budget = budget
 
     def complete(self, system: str, user: str) -> str:
         msg = self._post([{"role": "system", "content": system}, {"role": "user", "content": user}])
@@ -132,6 +163,8 @@ class OpenAICompatibleLLM:
         return self._post(messages, tools)
 
     def _post(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
+        if self.budget and self.budget.exhausted():
+            raise ToolError("quota", "llm daily budget")
         body = {"model": self.model, "temperature": 0, "messages": messages}
         if tools:
             body["tools"] = tools
@@ -155,6 +188,8 @@ class OpenAICompatibleLLM:
             raise ToolError("timeout", "llm") from None
         except (urllib.error.URLError, OSError):
             raise ToolError("transient", "llm network") from None
+        if self.budget:
+            self.budget.add(data.get("usage"))
         try:
             msg = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError):
