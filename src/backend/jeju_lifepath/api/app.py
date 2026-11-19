@@ -47,10 +47,10 @@ PROCESSED_DIR = ROOT / "data" / "processed"
 OSM_FILE = ROOT / "data" / "private" / "osm" / "jeju_highways.json"
 PRIVATE_DIR = ROOT / "data" / "private"
 ENV_FILE = ROOT / ".env"
-TOILET_FILE = PRIVATE_DIR / "공중화장실정보_제주특별자치도.csv"
+TOILET_FILE = PRIVATE_DIR / "toilets_jeju.csv"
 HUB_LINK_DIR = PRIVATE_DIR / "hub_link"  # scripts/fetch_hub_links.py
 BARRIER_FREE_FILE = PRIVATE_DIR / "barrier_free.json"  # scripts/build_barrier_free.py
-CCTV_FILES = [PRIVATE_DIR / "CCTV정보_제주특별자치도.csv", PRIVATE_DIR / "CCTV정보.csv"]
+CCTV_FILES = [PRIVATE_DIR / "cctv_standard_jeju.csv", PRIVATE_DIR / "cctv_hub510.csv"]
 # 제주도 전체를 덮는 사각형(경도·위도). 경로 요청 좌표가 이 밖이면 거절한다
 # (kakao.js 검색 범위와 같음)
 JEJU_LON = (125.9, 127.0)

@@ -8,9 +8,9 @@
 |---|---|---|---|
 | `private/osm/jeju_highways.json` | OpenStreetMap 제주 도로망 | ODbL 1.0. © OpenStreetMap contributors. 이 가공본도 ODbL로 배포 | 제주 범위의 길만 추출 |
 | `private/barrier_free.json` | 제주데이터허브 무장애여행정보 272건(허브 622~742, 858, 1050~1200) | 제주데이터허브 이용약관(출처 표시) | 한글 문서 본문·GPS CSV를 장소 이름으로 묶어 182곳 |
-| `private/CCTV정보.csv` | 제주데이터허브 510 CCTV 정보 | 제주데이터허브 이용약관 | 원본 그대로 |
-| `private/CCTV정보_제주특별자치도.csv` | 행정안전부 전국CCTV표준데이터(공공데이터포털) | 공공데이터포털 이용허락(출처 표시) | 제주만 |
-| `private/공중화장실정보_제주특별자치도.csv` | 전국공중화장실표준데이터(공공데이터포털) | 공공데이터포털 이용허락(출처 표시) | 제주만 |
+| `private/cctv_hub510.csv` | 제주데이터허브 510 CCTV 정보 | 제주데이터허브 이용약관 | 원본 그대로 |
+| `private/cctv_standard_jeju.csv` | 행정안전부 전국CCTV표준데이터(공공데이터포털) | 공공데이터포털 이용허락(출처 표시) | 제주만 |
+| `private/toilets_jeju.csv` | 전국공중화장실표준데이터(공공데이터포털) | 공공데이터포털 이용허락(출처 표시) | 제주만 |
 | `private/hub_link/*.csv` | 허브 1063·1165·1058·1236(공공데이터포털 연결) | 이용허락 제한 없음 | 원본 그대로 |
 | `processed/accident-zones.geojson` | 한국도로교통공단 교통사고 다발지역(공공데이터포털) | 공공데이터포털 이용허락(출처 표시) | 제주 영역 도형 |
 | `processed/hub-accident-hotspots.geojson`, `processed/hub-wifi.geojson` | 제주데이터허브 교통사고 다발지역(493)·공공와이파이 AP 정보(720) | 제주데이터허브 이용약관 | 좌표 정규화(WGS84) |

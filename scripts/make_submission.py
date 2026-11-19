@@ -19,9 +19,9 @@ ALLOWED = ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_DAILY_BUDGET_USD")
 DATA_FILES = (
     "data/private/osm/jeju_highways.json",
     "data/private/barrier_free.json",
-    "data/private/공중화장실정보_제주특별자치도.csv",
-    "data/private/CCTV정보_제주특별자치도.csv",
-    "data/private/CCTV정보.csv",
+    "data/private/toilets_jeju.csv",
+    "data/private/cctv_standard_jeju.csv",
+    "data/private/cctv_hub510.csv",
     "data/private/hub_link/emergency.csv",
     "data/private/hub_link/night_pharmacy.csv",
     "data/private/hub_link/nursing_room.csv",

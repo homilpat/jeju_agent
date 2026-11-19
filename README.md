@@ -92,8 +92,8 @@ uvicorn jeju_lifepath.api.app:app --port 8000
 | 허브 LINK 4종: 공공심야약국(1063)·모유수유시설(1165)·응급의료기관(1058)·올레코스(1236) | 제주데이터허브 → 공공데이터포털(제한 없음) | `python scripts/fetch_hub_links.py` (키 불필요) | `data/private/hub_link/` | 그 시설·올레 안내 없음 |
 | 무장애여행정보: 허브 "무장애" 272건(CSV·한글 문서·압축) + 공공데이터포털 | 제주데이터허브(로그인 후 내려받기), 공공데이터포털 | 허브: 로그인 → "무장애" 검색 → 각 자료 첨부 받기(목록 `data/specs/barrier_free_hub_manifest.csv`) / 포털: `python scripts/fetch_barrier_free.py` → 묶기: `pip install -e ".[data]"` 후 `python scripts/build_barrier_free.py` | `data/private/barrier_free_hub/`, `barrier_free_hub_files/`, `barrier_free_zip/`, `barrier_free/` → `data/private/barrier_free.json` | 무장애 여행지·지식그래프·휠체어 확인 길 없음 |
 | 공공와이파이(720)·사고다발지(493) | 제주데이터허브 | `python scripts/fetch_jeju_data.py` 후 `python -m jeju_lifepath.data.ingest` (스펙 `data/specs/`) | `data/processed/hub-*.geojson` | 와이파이 안내 없음 |
-| CCTV(허브 510, 전국 CCTV 표준데이터) | 제주데이터허브, 공공데이터포털 | 각 사이트에서 CSV 내려받기 | `data/private/CCTV정보.csv`, `CCTV정보_제주특별자치도.csv` | 안전환경 경로의 CCTV 지표 없음 |
-| 공중화장실 표준데이터 | 공공데이터포털 | CSV 내려받기 | `data/private/공중화장실정보_제주특별자치도.csv` | 근처 화장실 없음 |
+| CCTV(허브 510, 전국 CCTV 표준데이터) | 제주데이터허브, 공공데이터포털 | 각 사이트에서 CSV 내려받기 | `data/private/cctv_hub510.csv`, `cctv_standard_jeju.csv` | 안전환경 경로의 CCTV 지표 없음 |
+| 공중화장실 표준데이터 | 공공데이터포털 | CSV 내려받기 | `data/private/toilets_jeju.csv` | 근처 화장실 없음 |
 | 교통사고 다발지역 | 한국도로교통공단·전국 표준데이터(공공데이터포털) | `python scripts/fetch_accident_zones.py` (`DATA_GO_KR_API_KEY`) | `data/processed/accident-zones.geojson` | 안전환경 경로의 사고 지표 없음 |
 | 행정동 경계 | 통계청 SGIS, 가공 vuski/admdongkor(CC BY 4.0) | `python scripts/fetch_admdong.py` | `data/processed/jeju-admdong.geojson` | 지역 공백 불가 |
 | 경찰관서 | 생활안전지도(공공누리 4유형, 제출 ZIP에 없음) | `python scripts/fetch_jeju_data.py --police-only` 후 ingest(data/README.md) | `data/processed/safemap-police.geojson` | 근처 파출소 없음 |
