@@ -9,6 +9,22 @@ LLM이 목표를 보고 도구를 스스로 골라 부르고, 결과를 보며 �
 - 검증 결과: [docs/VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md)
 - 정한 값과 근거: [docs/development/open-decisions.md](docs/development/open-decisions.md)
 
+## 제출물 안내 (대회 요구 항목 → 위치)
+
+| 요구 항목 | 위치 |
+|---|---|
+| Agent 실행 코드 | `src/backend/jeju_lifepath/agent/` (루프 `loop.py`, 오케스트레이터 `orchestrator.py`, 지식그래프 `kg.py`) |
+| Prompt | `src/backend/jeju_lifepath/agent/loop.py`의 `LOOP_PROMPT`, `llm.py`의 `SYSTEM_PROMPT`(제한 모드·비교용 해석) |
+| Tool/API 연동 | `agent/loop.py`(도구 15개 정의), `agent/services.py`, `agent/kakao.py` |
+| 데이터 처리 코드 | `src/backend/jeju_lifepath/data/`, `scripts/build_barrier_free.py`, `scripts/fetch_*.py` |
+| 사용 모델·라이브러리 | 아래 "AI 활용", `pyproject.toml`·`uv.lock`·`src/frontend/package.json` |
+| 설치·실행 절차, 의존성, 환경변수 예시 | 아래 "설치와 실행", "환경변수", `.env.example` |
+| 사용자 매뉴얼 | 아래 "사용자 매뉴얼" |
+| 오류·제약사항 | 아래 "자주 생기는 문제", "제약사항" |
+| 데이터 활용 명세(출처·이용조건·전처리 흐름) | 아래 "자료 준비", [docs/PROPOSAL.md](docs/PROPOSAL.md) 7장, [docs/DATA_AVAILABILITY.md](docs/DATA_AVAILABILITY.md) |
+| 결과 설명자료(문제 정의·구조·기능·실행 결과·검증·한계·센터 활용) | [docs/PROPOSAL.md](docs/PROPOSAL.md), [docs/VALIDATION_REPORT.md](docs/VALIDATION_REPORT.md) |
+| 평가용 LLM 키 | 제출 ZIP의 `.env`(LLM 키와 하루 요금 상한만. 평가 기간이 끝나면 폐기) |
+
 ## 주요 기능
 
 | 기능 | 이렇게 물으면 |
@@ -81,6 +97,28 @@ uvicorn jeju_lifepath.api.app:app --port 8000
 | 경찰관서 | 생활안전지도 | `python scripts/fetch_jeju_data.py` | `data/processed/safemap-police.geojson` | 근처 파출소 없음 |
 
 키 연결 확인: `python scripts/check_api_keys.py`
+
+## 사용자 매뉴얼
+
+1. **회원가입·로그인:** 첫 화면에서 아이디(영문·숫자 3~20자)와 비밀번호를 만들어요.
+2. **AI 길잡이(첫 화면):** 아래 입력창에 평소 말투로 물어요. 넓은 화면은 왼쪽 대화·오른쪽 지도, 폰은 위 지도·아래 대화예요.
+   - 위치 사용을 허락하면 "근처", "여기서"가 지금 위치 기준이 돼요. 허락하지 않으면 지도 가운데를 기준으로 하거나 장소를 물어요.
+   - 할망이 되물으면 버튼을 누르거나 말로 답해요.
+   - 경로 카드를 누르면 그 경로가 지도에 그려져요. 장소 카드는 지도 위치로 이동해요.
+3. **일정:** "동문시장에서 빵집 두 곳이랑 카페 들르고 6시까지 돌아오는 코스"처럼 말하면 초안이 나와요. "카페 빼줘"처럼 말로 고치고, **내 여행에 저장** 버튼을 눌러야 저장돼요.
+4. **내 여행·플래너:** 위 메뉴의 "내 여행"에서 저장한 여행을 열고, 플래너에서 손으로 고치거나 AI 버튼으로 이어서 물어요.
+5. **대화 관리:** 새 대화, 지난 대화 불러오기, 제목 바꾸기, 기록 지우기. 기록은 7일 뒤 지워져요.
+6. **범죄주의구간:** 지도의 "범죄주의구간 보기" 버튼으로 생활안전지도 원본을 겹쳐 봐요(위험하다는 뜻이 아니에요).
+
+## 자주 생기는 문제
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| "잠깐 생각이 막혔구나, 다시 말해 주렴" | LLM 응답 실패·시간 초과 | 다시 말하기. 계속되면 `LLM_API_KEY` 확인(`python scripts/check_api_keys.py`) |
+| "오늘 AI 사용량이 다 차서…" | 하루 요금 상한(`LLM_DAILY_BUDGET_USD`) 도달 | 다음 날 자동 복구. 간단한 해석 모드로는 계속 동작 |
+| 길이 안 잡히거나 시설을 못 찾음 | 자료 미준비(`data/private/`, `data/processed/`) | 위 "자료 준비" 표대로 받기 |
+| 지도가 안 보임 | `KAKAO_JS_KEY` 없음 또는 카카오 앱 플랫폼에 주소 미등록 | 카카오 디벨로퍼스에서 `http://127.0.0.1:8000` 등록 |
+| 화면이 안 열림(404) | 화면 미빌드 | `cd src/frontend && npm ci && npm run build` |
 
 ## 테스트와 평가
 
