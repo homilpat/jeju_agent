@@ -40,7 +40,9 @@ JSON 하나만 출력한다. 설명·코드블록 없이 JSON만.
 - guide: 근처 시설(약국·화장실·와이파이·파출소·공공심야약국·수유실·응급실)이나 장소 종류 찾기, 특정 장소 설명
 - olle: 제주 올레길 코스 안내(몇 코스인지, 가까운 코스). 코스를 말했으면 place_query에 "7코스"처럼
 - barrier_free: 휠체어·유모차·어르신이 가기 좋은 곳(무장애 여행지) 찾기, 어떤 장소의 장애인 화장실·경사·턱 같은
-  접근성 묻기. 장소 이름을 말했으면 place_query에
+  접근성 묻기. 장소 이름을 말했으면 place_query에. 휠체어·유모차를 쓰거나 몸이 불편한 사람이 갈 만한 곳·
+  여행지·관광지를 추천해 달라고 하면 이것으로(조사된 무장애 여행지 위주로 추천한다). 카페·식당처럼 종류를
+  콕 집어 말했으면 guide
 - route: 두 곳 사이 걷는 길 / route_poi: 정해진 도착지로 가는 길 중간에 들를 시설·장소 찾기(도착지가 있어야 함)
 - area_gap: 한 지역에서 시설이 멀거나 부족한 곳 살펴보기
 - plan_create: 들를 곳을 넣은 걷기 코스·일정 만들기("~들르고 돌아오는 코스"도 여기) / plan_modify: 이미 있는 일정 고치기
@@ -58,12 +60,12 @@ true|false 칸은 사용자가 이번 말에서 켜거나 끄라고 직접 말�
  "location_text": 출발·기준 장소 고유명사|null, "use_current_location": true|false,
  "destination_text": 도착 장소 고유명사|null, "round_trip": true|false,
  "facility": "pharmacy|toilet|wifi|police|night_pharmacy|nursing_room|emergency"|null, "place_query": 설명을 원하는 장소 이름|null,
- "mobility": "WHEELCHAIR|STROLLER"|null, "transport": "walk|car|bus|taxi"|null,
+ "mobility": "WHEELCHAIR|STROLLER|STANDARD"|null, "transport": "walk|car|bus|taxi"|null,
  "themes": [들를 장소 종류(카카오 지도 검색어)], "theme_counts": {{"종류": 곳 수}},
  "day_themes": [[1일차 종류], [2일차 종류]], "next_day": true|false,
  "stop_count": 정수|null, "stay_minutes": 정수|null, "free_minutes": 정수|null,
  "date": "YYYY-MM-DD"|null, "depart_at": "YYYY-MM-DDTHH:MM:00+09:00"|null, "return_by": 같은 형식|null,
- "route_preference": "SHORTEST|SAFETY|BALANCED"|null, "prefer_cctv": true|false|null,
+ "route_preference": "SHORTEST|SAFETY|BALANCED"|null, "prefer_cctv": true|false|null, "mobility_unclear": true,
  "save_mode": "overwrite|new"|null,
  "changes": [{{"op": "exclude|keep|complete|prioritize|add_theme", "target": 일정 번호|null,
               "last": true|false, "theme": 종류|null}}],
@@ -88,6 +90,9 @@ true|false 칸은 사용자가 이번 말에서 켜거나 끄라고 직접 말�
 - reply는 chat일 때만 쓴다.
 - mobility는 휠체어·유모차를 직접 말했거나 돌려 말했을 때(예: 애기 태우고, 바퀴 달린 의자, 다리가 불편해 휠체어 타)
   쓴다. 나이·몸 상태만으로 짐작하지 않는다. 대화에 휠체어·유모차라는 말이 없으면 도우미가 맞는지 묻는다.
+- 몸이 불편하다·다리가 아프다·거동이 어렵다처럼 이동이 힘들다고만 하고 휠체어·유모차는 말하지 않았으면
+  mobility는 비우고 "mobility_unclear": true(도우미가 휠체어·유모차를 쓰는지 묻는다). 앞 대화에서 이미 답했으면 쓰지 않는다.
+  휠체어·유모차 없이 걷는다고 답하면 mobility "STANDARD".
 - reply에 날씨·영업 여부·혼잡처럼 확인하지 않은 사실을 단정하지 않는다.
 - reply·ask는 제주 할망처럼 다정한 반말 한두 문장. 예: "걷는 길이랑 일정을 같이 짜 준단다.",
   "어느 정류장 근처니?", "다시 알려 주렴." 영어 코드·괄호·기호를 쓰지 않는다."""
@@ -350,4 +355,5 @@ def _read(data: dict, text: str, context: str, now: datetime, mode: str) -> Pars
         reply=_say(data.get("reply")),
         confirm=list(dict.fromkeys(confirm)),
         ask_mobility=mobility if mobility in ("WHEELCHAIR", "STROLLER") and not direct else None,
+        mobility_unclear=data.get("mobility_unclear") is True and mobility not in ("WHEELCHAIR", "STROLLER"),
     )

@@ -1791,3 +1791,45 @@ def test_verified_segments_follow_surveyed_track_minus_barriers():
     long = Segment("long", "g", "h", ((126.5015, 33.5), (126.5035, 33.5)), 186.0)
     assert "long" not in verified_segment_ids(places, [long])
     assert verified_segment_ids([{"track": [], "points": []}], [on]) == frozenset()
+
+
+def test_body_discomfort_asks_wheelchair_or_stroller(world):
+    # "몸이 불편해"만으로 휠체어로 정하지 않고 묻는다. 고른 답대로 길을 찾는다
+    out = {"intent": "route", "location_text": "격자동", "destination_text": "격자마을",
+           "route_preference": "SHORTEST", "mobility_unclear": True}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    r = say(world, "몸이 불편한데 격자동에서 격자마을까지 최단 길", agent=agent)
+    assert r["message"] == "휠체어나 유모차를 쓰니? 맞는 길로 찾아 줄게." and tools_called(agent) == []
+    say(world, "휠체어로 갈게", agent=agent, conv=r["conversation_id"])
+    assert '"WHEELCHAIR"' in json.dumps(agent.last_trajectory)
+    r = say(world, "몸이 불편한데 격자동에서 격자마을까지 최단 길", agent=agent)
+    say(world, "그냥 걸어서 갈게", agent=agent, conv=r["conversation_id"])
+    assert '"STANDARD"' in json.dumps(agent.last_trajectory)
+
+
+def test_body_discomfort_not_asked_for_place_info(world):
+    out = {"intent": "guide", "facility": "toilet", "use_current_location": True, "mobility_unclear": True}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    r = say(world, "다리가 아픈데 근처 화장실", loc=LOC, agent=agent)
+    assert r["status"] != "needs_input"  # 시설 찾기는 이동 조건과 상관없어 묻지 않음
+
+
+def test_body_discomfort_walk_answer_resets_saved_mobility(world):
+    out = {"intent": "route", "location_text": "격자동", "destination_text": "격자마을",
+           "route_preference": "SHORTEST", "mobility": "WHEELCHAIR"}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    conv = say(world, "휠체어로 격자동에서 격자마을까지 최단 길", agent=agent)["conversation_id"]
+    out.pop("mobility"); out["mobility_unclear"] = True
+    say(world, "몸이 좀 불편한데 격자동에서 격자마을까지 최단 길", agent=agent, conv=conv)
+    say(world, "그냥 걸어서 갈게", agent=agent, conv=conv)
+    assert '"STANDARD"' in json.dumps(agent.last_trajectory)  # 앞 대화의 휠체어가 남지 않음
+
+
+def test_body_discomfort_question_survives_other_answers(world):
+    out = {"intent": "route", "location_text": "격자동", "route_preference": "SHORTEST",
+           "mobility_unclear": True, "ask": ["어디까지 가니?"]}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    conv = say(world, "다리가 아픈데 격자동에서 가는 길", agent=agent)["conversation_id"]
+    out.pop("ask"); out.pop("mobility_unclear"); out["destination_text"] = "격자마을"
+    r = say(world, "격자마을까지", agent=agent, conv=conv)
+    assert r["message"] == "휠체어나 유모차를 쓰니? 맞는 길로 찾아 줄게."  # 다른 것만 답해도 다시 물음

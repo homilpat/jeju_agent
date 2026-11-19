@@ -309,6 +309,8 @@ def parse_rules(text: str, now: datetime, has_trip: bool = False) -> ParseResult
         put("mobility", MobilityProfile.STROLLER)
     elif "휠체어" in raw:
         put("mobility", MobilityProfile.WHEELCHAIR)
+    elif "그냥 걸어서" in raw:  # "휠체어나 유모차를 쓰니?"에 '아니, 걸어서' 버튼 답: 이동 조건을 보통으로
+        put("mobility", MobilityProfile.STANDARD)
     if re.search(r"cctv", t):
         put("prefer_cctv", True)
     if re.search(r"최단|빠른|빨리", raw):

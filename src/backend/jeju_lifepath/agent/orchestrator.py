@@ -41,6 +41,8 @@ KAKAO_MAX_RADIUS_M = 20000  # 카카오 로컬 검색 반경 상한(API 규격)
 
 
 LLM_STUCK = "잠깐 생각이 막혔구나, 다시 말해 주렴."
+# 이동 조건에 따라 결과가 달라지는 요청(길·일정·지역 공백)
+MOBILITY_INTENTS = ("route", "route_poi", "plan_create", "plan_modify", "area_gap")
 
 
 class NeedInput(Exception):  # noqa: N818 - 흐름 제어용(오류 아님)
@@ -564,6 +566,7 @@ class Agent:
                 # 앞에서 남은 확인 + 이번 답에서 새로 고친 이름(답에서 고친 이름도 묻는다)
                 "confirm": list(dict.fromkeys([*base.confirm, *parsed.confirm])),
                 "ask_mobility": parsed.ask_mobility or base.ask_mobility,  # 다른 질문에 먼저 답해도 남김
+                "mobility_unclear": base.mobility_unclear or parsed.mobility_unclear,  # 이동 조건이 채워지면 묻지 않음
             }
         )
 
@@ -571,6 +574,13 @@ class Agent:
     def _dispatch(self, p: ParseResult, ctx: dict) -> dict:
         if p.ambiguities:
             raise NeedInput([{"text": a} for a in p.ambiguities], p.model_dump(mode="json"))
+        # 이동이 힘들다고만 했으면 길·일정을 짜기 전에 어떤 도움이 필요한지 묻는다(짐작해서 정하지 않음)
+        if p.mobility_unclear and not p.slots.mobility and p.intent in MOBILITY_INTENTS:
+            opts = [("휠체어", "휠체어로 갈게"), ("유모차", "유모차로 갈게"), ("아니, 걸어서", "그냥 걸어서 갈게")]
+            ask = [{"text": "휠체어나 유모차를 쓰니? 맞는 길로 찾아 줄게.",
+                    "options": [{"label": a, "reply": b} for a, b in opts]}]
+            # 이동 조건이 채워질 때까지 표시를 남긴다(다른 것만 답하면 다시 묻는다)
+            raise NeedInput(ask, p.model_dump(mode="json"))
         if p.ask_mobility:  # 짐작한 휠체어·유모차는 묻고 나서 쓴다. 답 버튼의 낱말로 규칙 해석이 칸을 채움
             word = present.MOBILITY_WORD[p.ask_mobility]
             yes, no = f"응, {word} 길로", "아니, 그냥 걸어서"

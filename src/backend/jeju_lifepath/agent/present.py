@@ -904,6 +904,10 @@ def itinerary(
             f"{MOBILITY_WORD[mobility]}로 갈 수 없는 계단 구간을 빼고 셈했단다. "
             "계단 말고 다른 장애물은 자료가 없어서 확인하지 못했구나."
         )
+        notes.append(
+            f"{MOBILITY_WORD[mobility]}로 다니기 좋은지 직접 조사한 무장애 여행지도 있단다. "
+            "'근처 무장애 여행지 알려줘'라고 물어보렴."
+        )
     count = len(stops)
     msg = (
         f"좋은 생각이야! {count}곳을 들르는 일정을 짜 봤단다. 마음에 들면 내 여행에 저장해 두렴."
