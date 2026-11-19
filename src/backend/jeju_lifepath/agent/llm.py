@@ -178,10 +178,10 @@ def _json_block(text: str) -> dict:
 
 
 # 내부 값이 새는 길: LLM이 프롬프트에 적힌 칸 이름·코드값(place_query, night_pharmacy, SHORTEST)이나
-# JSON을 답 문장에 그대로 옮겨 쓰는 것. 그래서 괄호·밑줄 낱말·프롬프트의 영어 낱말만 막고
-# GS25·CU·KTX 같은 평범한 영어는 둔다
+# JSON을 답 문장에 그대로 옮겨 쓰는 것. 중괄호·대괄호·밑줄 낱말·대문자 코드는 언제나 막고, 소문자 칸 이름(intent, chat)은
+# 한국어 문장에 섞였을 때만 막는다(영어 문장에서는 평범한 낱말이라 영어 답을 막지 않게). GS25·KTX는 통과
 INTERNAL_WORDS = {w.lower() for w in re.findall(r"[A-Za-z_]{2,}", SYSTEM_PROMPT)} - {"cctv"}
-LEAK = re.compile(r"[{}\[\]<>]|[A-Za-z]+_[A-Za-z_]+")
+LEAK = re.compile(r"[{}\[\]<>]|[A-Za-z0-9]+_[A-Za-z0-9_]+")
 # 앞 대화는 같은 대화가 이어지는 동안 전부 보낸다. 아래는 너무 긴 대화로 LLM 입력이 넘치지 않게 하는
 # 안전장치일 뿐이다(잠정값, open-decisions): 말 하나 2000자, 전체 2만 자를 넘으면 가장 오래된 말부터 뺀다
 HISTORY_LINE_CHARS = 2000
@@ -193,7 +193,10 @@ ASK_PAST = "이미 지난 시각이구나. 날짜나 시각을 다시 알려 주
 def _say(value) -> str:
     """LLM이 쓴 사용자용 문장. 내부 값이 섞였으면 버린다."""
     v = value.strip() if isinstance(value, str) else ""
-    leaked = LEAK.search(v) or any(w.lower() in INTERNAL_WORDS for w in re.findall(r"[A-Za-z]{2,}", v))
+    korean = re.search(r"[가-힣ㄱ-ㅎㅏ-ㅣᄀ-ᇿ]", v) is not None  # 자모·풀어 쓴 한글 포함
+    leaked = LEAK.search(v) or any(
+        w.lower() in INTERNAL_WORDS and (korean or w.isupper()) for w in re.findall(r"[A-Za-z]{2,}", v)
+    )
     if leaked:  # 얼마나 자주 버리는지 보려고 남긴다(문장은 남기지 않음)
         log.info("llm text dropped: internal words")
     return "" if leaked else v

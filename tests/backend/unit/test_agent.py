@@ -405,6 +405,10 @@ def test_llm_plain_english_kept_internal_words_dropped(world):
         assert _say(ok) == ok
     for bad in ("facility는 pharmacy", "place_query", '{"a": 1}', "SHORTEST로 할게", "night_pharmacy"):
         assert _say(bad) == ""
+    # 영어 문장의 평범한 낱말(route, guide, walk)은 막지 않는다. 대문자 코드·밑줄은 영어여도 막는다
+    assert _say("I can guide you along a walking route.") == "I can guide you along a walking route."
+    assert _say("Your route is SHORTEST.") == "" and _say("Set place_query first.") == ""
+    assert _say("chat ㅋㅋ") == "" and _say("foo_1 이란다") == ""
 
 
 def test_llm_corrected_place_name_is_confirmed(world):
