@@ -7,17 +7,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 # Windows drive + Users, git-bash /c/Users, macOS /Users, Linux /home.
 _ABS = re.compile(r"[A-Za-z]:[\\/]+Users[\\/]|/[a-z]/Users/|(?<![\w.])/Users/\w|/home/\w")
-_BINARY = {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".ico", ".lock"}
+_BINARY = {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".ico", ".lock", ".webp", ".pyc"}
 
 
 def test_no_absolute_personal_paths_in_tracked_files():
-    files = subprocess.run(
-        ["git", "ls-files", "-c"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.splitlines()
+    if (ROOT / ".git").exists():
+        files = subprocess.run(
+            ["git", "ls-files", "-c"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+    else:  # 제출 ZIP처럼 git 기록 없이 받은 사본: 내려받은 파일 전체를 검사
+        skip = {".venv", "node_modules", "dist", "data", "__pycache__", ".pytest_cache"}
+        files = [str(f.relative_to(ROOT)) for f in ROOT.rglob("*") if not skip & set(f.relative_to(ROOT).parts)]
     hits = []
     for name in files:
         path = ROOT / name
