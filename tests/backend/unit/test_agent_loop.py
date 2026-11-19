@@ -187,3 +187,11 @@ def test_vehicle_request_hands_off_to_kakao_map_directions(world):
     card = r["places"][0]
     assert card["url"].startswith("https://map.kakao.com/link/") and card["link_label"].startswith("카카오맵")
     assert "카카오맵 길찾기" in r["message"] and r["questions"][0]["options"][0]["label"] == "걸어서 갈게"
+
+
+def test_answer_to_llm_question_goes_back_to_llm(world):
+    llm, _ = script(call("ask_user", question="심야약국을 찾아 줄까?", options=["심야약국 찾아줘", "그냥 약국 찾아줘"]))
+    r = say(world, "격자동 근처 약국", agent=agent_with(world, llm))
+    llm2, seen = script(call("find_nearby", facility="night_pharmacy", location_text="격자동"), {"content": ""})
+    say(world, "심야약국 찾아줘", agent=agent_with(world, llm2), conv=r["conversation_id"])  # 버튼 답
+    assert seen and "격자동" in json.dumps(seen[0], ensure_ascii=False)  # LLM이 앞 대화를 보고 이어 감

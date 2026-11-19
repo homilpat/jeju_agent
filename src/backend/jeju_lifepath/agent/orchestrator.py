@@ -616,8 +616,10 @@ class Agent:
             shown = ctx.get("loop_draft")
             if shown and shown["message"] not in q:  # 앞서 만든 화면의 말(예: 거절)을 잃지 않게
                 q = f"{shown['message']} {q}"
+            # LLM이 한 질문의 답(버튼 포함)은 LLM에게 돌아가 앞 대화(예: 제주시청 근처)를 이어 가게 한다.
+            # 이어 갈 해석(pending)이 없으므로 버튼 답을 기존 길로 보내면 앞 요청을 잃는다
             raise NeedInput([{"text": q, **({"options": [{"label": o, "reply": o} for o in opts]} if opts else {})}],
-                            None)
+                            None, replies=[])
         try:
             return self._loop_run(name, args, text, context, now, ctx)
         except NeedInput as q:
