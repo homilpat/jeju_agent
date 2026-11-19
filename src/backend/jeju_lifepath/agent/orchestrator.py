@@ -27,7 +27,7 @@ from jeju_lifepath.agent.llm import _read, _say, _talk, llm_parse
 from jeju_lifepath.agent.models import ParseResult, Slots, ToolError
 from jeju_lifepath.agent.parse import LODGING, SEOUL, THEME_CATEGORY, is_kind, parse_rules
 from jeju_lifepath.agent.services import AgentContext, build_tools
-from jeju_lifepath.data.barrier_free import name_key
+from jeju_lifepath.data.barrier_free import name_key, place_ref
 from jeju_lifepath.agent.tools import Budget, BudgetExceeded, ToolRunner
 from jeju_lifepath.api.store import DraftOutdated, RunCancelled, Store, VersionConflict
 from jeju_lifepath.geo.geodesy import haversine_m
@@ -50,7 +50,6 @@ BARRIER_FREE_THEME = "무장애 여행지"
 # 잠정값: 후보마다 카카오 이름 검색을 한 번씩 해서 도구 호출 예산(22)을 아낌
 BARRIER_FREE_CANDIDATES = 6
 # 잠정값: 조사 자료 위치와 카카오 장소가 이만큼 안이면 같은 곳으로 봄
-BARRIER_FREE_MATCH_M = 1000
 # 이동 조건에 따라 결과가 달라지는 요청(길·일정·지역 공백)
 MOBILITY_INTENTS = ("route", "route_poi", "plan_create", "plan_modify", "area_gap")
 
@@ -948,9 +947,17 @@ class Agent:
         args["radius_m"] = self.policy.widened_radius_m
         return ctx["runner"].call("search_places", args)["places"], True
 
+    def _public_place(self, ref: str) -> dict:
+        """저장된 무장애 여행지 번호 → 조사 자료의 이름·좌표(없어졌으면 빈 사전: 구간 시간 '확인 못 함')."""
+        for bf in self.ctx.barrier_free:
+            if place_ref(bf) == ref:
+                return {"name": bf["name"], "category": BARRIER_FREE_THEME, "address": bf.get("address"),
+                        "lon": bf["lon"], "lat": bf["lat"]}
+        return {}
+
     def _barrier_free_candidates(self, ctx, near: dict) -> list[dict]:
-        """일정 후보: 가까운 무장애 여행지(공공 조사 자료)를 이름으로 카카오에서 찾아 보통 장소처럼 쓴다.
-        저장·수정·다시 열기는 카카오 장소와 같은 길(검색어 = 여행지 이름). 같은 이름이 없으면 뺀다."""
+        """일정 후보: 무장애 여행지(공공 조사 자료)를 그 자료의 이름·좌표 그대로 쓴다.
+        공공자료라 좌표를 저장할 수 있어 카카오에서 같은 곳을 다시 찾지 않는다(이름이 달라 빠지던 문제 없음)."""
         names = ctx.get("bf_names")
         if names:  # 지식그래프로 고른 여행지(LLM이 넘김): 그 이름들만, 공공 자료에서 바로
             want = {name_key(n) for n in names}
@@ -960,33 +967,12 @@ class Agent:
                 "barrier_free_places",
                 {"near": {"lon": near["lon"], "lat": near["lat"]}, "limit": BARRIER_FREE_CANDIDATES},
             )["places"]
-        out = []
-        for bf in picked:
-            name = bf["name"][:40]
-            # 다시 열 때와 같은 검색(이름만, 카카오 정확도 순)으로 찾는다. 조사 위치 근처만.
-            # "산지천갤러리와산짓물공원"처럼 두 곳을 묶은 이름은 못 찾으면 앞 이름으로 한 번 더
-            hit = None
-            first = re.split(r"(?<=[가-힣])(?:와|과)(?=[가-힣])", name)[0]
-            # 앞 이름이 너무 짧으면("제주과학관" -> "제주") 다른 곳이 잡히므로 쓰지 않는다
-            for word in dict.fromkeys([name, first] if len(first) >= 4 else [name]):  # noqa: PLR2004
-                hits = ctx["runner"].call("search_places", {"query": word})["places"]
-                want = name_key(word)
-                # 같은 곳 = 이름이 같거나 앞에 지역 이름만 붙은 곳("제주동문시장", "제주특별자치도 민속자연사박물관").
-                # 뒤에 말이 붙은 곳("격자공원 주차장", "○○박물관점")은 딸린 시설이라 뺀다
-                same = [
-                    h for h in hits
-                    if name_key(h["name"]).endswith(want)
-                    and haversine_m(bf["lon"], bf["lat"], h["lon"], h["lat"]) <= BARRIER_FREE_MATCH_M
-                ]
-                same.sort(key=lambda h: name_key(h["name"]) != want)  # 같은 이름 먼저, 그다음 카카오 정확도 순
-                if same:
-                    hit, name = same[0], word
-                    break
-            if hit is None:
-                ctx["observations"].append("barrier_free_unmatched")
-                continue
-            out.append({**hit, "query": name, "access": " · ".join(present.access_bits(bf))})
-        return out
+        return [
+            {"source": "public", "ref": place_ref(bf), "name": bf["name"], "query": bf["name"][:40],
+             "category": BARRIER_FREE_THEME, "address": bf.get("address"), "lon": bf["lon"], "lat": bf["lat"],
+             "access": " · ".join(present.access_bits(bf))}
+            for bf in picked
+        ]
 
     # intents ------------------------------------------------------------
     def _guide(self, p: ParseResult, ctx) -> dict:
@@ -1339,7 +1325,8 @@ class Agent:
             (f"{s.day_no}일차 · " if s.day_no else "") + "·".join(s.themes) + " 코스"
         )[:60]
         places = [
-            {"source": "kakao", "ref": x["ref"], "name": x["query"], "category": x["theme"]}
+            # 공공자료 장소(무장애 여행지)는 저장 검사 때 서버가 자기 자료에서 좌표를 붙인다
+            {"source": x.get("source", "kakao"), "ref": x["ref"], "name": x["query"], "category": x["theme"]}
             for x in stops
         ]
         return {
@@ -1397,7 +1384,7 @@ class Agent:
                 None,
             )
         body, _version, _ = ctx["trip"]
-        if any(pl["source"] != "kakao" for pl in body.get("places", [])):
+        if any(pl["source"] != "kakao" and not pl["ref"].startswith("barrier_free/") for pl in body.get("places", [])):
             raise NeedInput(
                 [{"text": "직접 고른 공공시설이 들어 있는 일정은 여행 화면에서 고쳐 주렴."}], None
             )
@@ -1415,9 +1402,10 @@ class Agent:
                 "fixed": meta.get(pl["ref"], {}).get("fixed", False),
                 "completed": meta.get(pl["ref"], {}).get("completed", False),
                 "access": meta.get(pl["ref"], {}).get("access"),
+                "source": pl["source"],
+                **(self._public_place(pl["ref"]) if pl["source"] == "public" else {}),
             }
             for pl in body.get("places", [])
-            if pl["source"] == "kakao"
         ]
         if not p.requested_changes:
             raise NeedInput(
@@ -1508,6 +1496,8 @@ class Agent:
         찾지 못한 장소는 일정에 그대로 두고 구간 시간을 '확인 못 함'으로 둔다."""
         by_query: dict[str, list[dict]] = {}
         for st in stops:
+            if st.get("source") == "public":  # 공공자료 장소는 좌표를 이미 가짐
+                continue
             # 만들 때 찾은 검색어는 분류(theme). 같은 기준점에서 거리순으로 찾으면 처음 고른 곳이
             # 같은 순서 안에 다시 나온다(만들 때 반경은 최대 20km라 같은 최대 반경으로)
             query = relocate_query(st)

@@ -1836,49 +1836,31 @@ def test_body_discomfort_question_survives_other_answers(world):
     assert r["message"] == "휠체어나 유모차를 쓰니? 맞는 길로 찾아 줄게."  # 다른 것만 답해도 다시 물음
 
 
-def test_barrier_free_places_become_itinerary_stops(world):
-    # 휠체어 일정: 후보를 무장애 여행지에서 고르고, 이름으로 찾은 카카오 장소로 저장·수정·다시 열기
-    world["ctx"].barrier_free.append({"name": "없는동산", "lat": CENTER["lat"], "lon": CENTER["lon"] + 0.001,
-                                      "address": "", "points": [], "nearby": [], "doc": None,
-                                      "barrier_points": 0, "toilet_points": 0})
-    out = {"intent": "plan_create", "location_text": "격자동", "mobility": "WHEELCHAIR",
-           "themes": ["무장애 여행지"], "stop_count": 1, "round_trip": True}
-    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
-    r = say(world, "휠체어로 격자동에서 갈 만한 곳 한 곳 들르고 돌아오는 코스", agent=agent)
-    stop = r["itinerary"]["stops"][0]
-    assert stop["name"] == "격자공원" and "장애인 화장실 있음" in stop["detail"]
-    assert any("같은 이름을 찾지 못한 무장애 여행지 1곳" in w for w in r["warnings"])
-    from jeju_lifepath.agent.orchestrator import BARRIER_FREE_THEME, locate_trip, relocate_query  # noqa: PLC0415
-    assert relocate_query({"theme": BARRIER_FREE_THEME, "query": "격자공원"}) == "격자공원"
-    body = {"places": [{"source": "kakao", "ref": "k13", "name": "격자공원", "category": BARRIER_FREE_THEME}],
-            "agent": {"start_point": {"lon": CENTER["lon"], "lat": CENTER["lat"]},
-                      "stops": [{"ref": "k13", "query": "격자공원", "theme": BARRIER_FREE_THEME}]}}
-    assert locate_trip(world["kakao"], body)["k13"]["name"] == "격자공원"  # 다시 열 때 같은 곳
-
-
-def test_barrier_free_joined_name_falls_back_to_first_name(world):
-    world["ctx"].barrier_free[:] = [{"name": "격자공원과한라숲", "lat": CENTER["lat"] + 0.001, "lon": CENTER["lon"],
-                                     "address": "", "points": [], "nearby": [], "doc": None,
-                                     "barrier_points": 0, "toilet_points": 0}]
-    out = {"intent": "plan_create", "location_text": "격자동", "mobility": "WHEELCHAIR",
-           "themes": ["무장애 여행지"], "stop_count": 1, "round_trip": True}
-    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
-    r = say(world, "휠체어로 격자동에서 갈 만한 곳 한 곳 들르고 돌아오는 코스", agent=agent)
-    assert r["itinerary"]["stops"][0]["name"] == "격자공원"
-
-
-def test_barrier_free_match_rejects_attached_facility(world):
-    # "한라공원 주차장"은 한라공원에 딸린 곳이라 같은 곳으로 보지 않는다(접근성 정보를 붙이지 않음)
-    world["kakao"].places = [p for p in world["kakao"].places if p[1] != "한라공원"]
-    world["ctx"].barrier_free[:] = [{"name": "한라공원", "lat": LAT0 + 5 * STEP, "lon": LON0 + 3 * STEP,
+def test_barrier_free_stop_uses_survey_place_even_if_kakao_name_differs(world):
+    # 카카오에 같은 이름이 없는 무장애 여행지(예: 조사 "이호테우해변" / 카카오 "이호테우해수욕장")도
+    # 조사 자료의 이름·좌표 그대로 일정에 들어가고, 공공자료 장소로 저장된다(좌표 저장 가능)
+    world["ctx"].barrier_free[:] = [{"name": "없는동산", "lat": CENTER["lat"], "lon": CENTER["lon"] + 0.001,
                                      "address": "", "points": [], "nearby": [], "doc": None,
                                      "barrier_points": 0, "toilet_points": 1}]
     out = {"intent": "plan_create", "location_text": "격자동", "mobility": "WHEELCHAIR",
            "themes": ["무장애 여행지"], "stop_count": 1, "round_trip": True}
     agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
     r = say(world, "휠체어로 격자동에서 갈 만한 곳 한 곳 들르고 돌아오는 코스", agent=agent)
-    assert not (r.get("itinerary") or {}).get("stops")
-    assert "한라공원 주차장" not in json.dumps(r, ensure_ascii=False)
+    stop = r["itinerary"]["stops"][0]
+    assert stop["name"] == "없는동산" and "장애인 화장실 있음" in stop["detail"]
+    body = trip_body(world, r["trip_id"])[0]
+    place = body["places"][0]
+    assert place["source"] == "public" and place["ref"] == "barrier_free/없는동산"
+    # 실제 서버의 저장 검사(플래너 형식)도 통과하고, 좌표는 서버가 조사 자료에서 붙인다
+    from jeju_lifepath.api.app import Planner, planner_body  # noqa: PLC0415
+    from jeju_lifepath.data.barrier_free import place_ref  # noqa: PLC0415
+    bf = world["ctx"].barrier_free[0]
+    checked = planner_body(Planner.model_validate(body), {place_ref(bf): (bf["lon"], bf["lat"])})
+    assert checked["places"][0]["lon"] == bf["lon"]
+    # 고치기: 공공자료 장소가 든 일정도 대화로 고칠 수 있고, 그 장소는 좌표 그대로 남는다
+    out.clear(); out.update({"intent": "plan_modify", "changes": [{"op": "keep", "target": 1}]})
+    r2 = say(world, "처음 데는 꼭 남겨둬", conv=r["conversation_id"], agent=agent)
+    assert r2["itinerary"]["stops"][0]["name"] == "없는동산" and r2["itinerary"]["stops"][0]["fixed"]
 
 
 def test_time_equal_to_now_means_leaving_now(world):

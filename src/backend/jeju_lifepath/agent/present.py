@@ -921,9 +921,6 @@ def itinerary(
         else:
             why = "더 들를 만한 곳을 찾지 못해서 "
         warnings.append(f"{s.stop_count}곳을 부탁했는데 {why}{len(stops)}곳만 넣었단다.")
-    if "barrier_free_unmatched" in ctx["observations"]:
-        n = ctx["observations"].count("barrier_free_unmatched")
-        warnings.append(f"카카오 지도에서 같은 이름을 찾지 못한 무장애 여행지 {n}곳은 일정 후보에서 뺐단다.")
     if "theme_not_found" in ctx["observations"]:
         warnings.append("말한 종류의 새 장소는 찾지 못해서 넣지 못했구나.")
     if mobility != MobilityProfile.STANDARD:

@@ -38,6 +38,11 @@ ACCESS_WORDS = re.compile(r"각도|단차|계단|경사|오르막|내리막|턱|
 BARRIER_WORDS = re.compile(r"(계단|(?<!전)경사(?!로|진)|길 상태 안 좋|턱)(?!\s*(이\s*)?없)")
 
 
+def place_ref(place: dict) -> str:
+    """일정·플래너에 공공자료 장소로 넣을 때의 번호("barrier_free/<여행지 이름>"). 서버가 이 번호로 조사 좌표를 붙인다."""
+    return f"barrier_free/{place['name']}"[:64]
+
+
 def name_key(name: str) -> str:
     return re.sub(r"[\s()·~\-_,.'‘’]", "", name)
 

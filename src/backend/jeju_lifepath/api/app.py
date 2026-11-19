@@ -32,6 +32,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from jeju_lifepath.agent.kakao import KakaoLocal
 from jeju_lifepath.agent.llm import DailyBudget, OpenAICompatibleLLM
+from jeju_lifepath.data.barrier_free import place_ref
 from jeju_lifepath.agent.models import Policy, ToolError
 from jeju_lifepath.agent.orchestrator import Agent, Conflict, NotFound, locate_trip
 from jeju_lifepath.agent.services import AgentContext
@@ -525,6 +526,8 @@ def create_app(  # noqa: PLR0915 - 엔드포인트를 한곳에 모아 둠
     barrier_free = (
         json.loads(barrier_free_file.read_text(encoding="utf-8")) if barrier_free_file.exists() else []
     )
+    # 무장애 여행지도 공공자료 장소로 일정·플래너에 넣는다(조사 좌표, 카카오 대조 없음)
+    public_points.update({place_ref(x): (x["lon"], x["lat"]) for x in barrier_free})
     nearby = load_nearby(processed_dir)
     areas, area_city = load_areas(processed_dir)
     app = FastAPI(title="JEJU LifePath", docs_url=None, redoc_url=None, openapi_url=None)
