@@ -1,8 +1,8 @@
 """LLM 제공자 어댑터(AG-203). 교체 가능: OpenAI 호환 chat/completions, 시험용 mock, 없음.
 
 LLM이 요청 해석의 주인이다: 앞 대화·화면·지금 말을 보고 의도·조건·되물을 말·잡담 답을 정한다.
-규칙 파서(parse.py)는 LLM이 없거나 실패했을 때만 쓴다. 낱말 목록은 프롬프트의 참고 예시일 뿐 거르지 않는다.
-검증은 형식(스키마)과 안전만: 장소 이름은 대화·화면에 나온 것만, 사용자 문장에 내부 값이 섞이면 버림.
+규칙 파서(parse.py)는 LLM이 없을 때(개발·시험)와 버튼 답에만 쓴다. LLM이 실패하면 다시 말해 달라고 한다. 낱말 목록은 프롬프트의 참고 예시일 뿐 거르지 않는다.
+검증은 형식(스키마)과 안전만: 장소 이름은 대화·화면에 나온 것만(비슷하면 맞는지 물음), 사용자 문장에 내부 값이 섞이면 버림.
 설정: configs/agent_policy.json의 llm(base_url, model, timeout_s) — 환경변수 LLM_BASE_URL,
 LLM_MODEL이 있으면 그 값을 쓴다. 키는 LLM_API_KEY(.env), 로그·응답·기록에 넣지 않는다.
 2026-11-18 확인: Meta Model API(https://api.meta.ai/v1)의 /models, /chat/completions가
@@ -11,6 +11,7 @@ OpenAI 호환 형식으로 응답함(muse-spark-1.3, reasoning_effort=low에서 
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import urllib.error
@@ -73,6 +74,8 @@ true|false 칸은 사용자가 이번 말에서 켜거나 끄라고 직접 말�
 - 숙소·호텔·집처럼 이름 없는 곳은 장소 이름 칸에 넣지 않는다.
 지켜야 할 것:
 - 장소 이름 칸에는 대화나 화면에 나온 이름만 쓴다. 지어내지 않는다. "거기", "아까 거"는 앞 대화에서 찾는다.
+- 장소 이름에 오타가 있거나 줄여 말했으면(예: 동문시정 → 동문시장, 일출봉 → 성산일출봉) 바로잡은 정식 이름을 쓴다.
+  맞는지는 도우미가 사용자에게 따로 묻는다. 확실하지 않으면 사용자가 쓴 그대로 둔다.
 - 가게·지명 이름 속 글자(예: 동문시장의 '시장')를 장소 종류로 넣지 않는다.
 - 시각은 [지금 시각] 기준으로 계산한다. 오전·오후를 알 수 없으면 정하지 말고 ask에 묻는다.
 - [사용자가 보고 있는 화면]에 지금 일정이 번호와 종류(검색어)로 나온다. "두 번째 곳", "카페 빼줘"를 그 번호로 바꿔 changes에 쓴다.
@@ -170,9 +173,11 @@ def _json_block(text: str) -> dict:
     return json.loads(m.group(0))
 
 
-# 사용자 문구로 그대로 보여 줄 수 없는 글: 영어 낱말(내부 칸 이름·코드), 괄호·중괄호.
-# 할망 답에는 영어를 쓰지 않으므로 CCTV만 빼고 영어 두 글자 이상이면 버린다
-LEAK = re.compile(r"[{}\[\]<>]|[A-Za-z]{2,}")
+# 내부 값이 새는 길: LLM이 프롬프트에 적힌 칸 이름·코드값(place_query, night_pharmacy, SHORTEST)이나
+# JSON을 답 문장에 그대로 옮겨 쓰는 것. 그래서 괄호·밑줄 낱말·프롬프트의 영어 낱말만 막고
+# GS25·CU·KTX 같은 평범한 영어는 둔다
+INTERNAL_WORDS = {w.lower() for w in re.findall(r"[A-Za-z_]{2,}", SYSTEM_PROMPT)} - {"cctv"}
+LEAK = re.compile(r"[{}\[\]<>]|[A-Za-z]+_[A-Za-z_]+")
 # 앞 대화는 같은 대화가 이어지는 동안 전부 보낸다. 아래는 너무 긴 대화로 LLM 입력이 넘치지 않게 하는
 # 안전장치일 뿐이다(잠정값, open-decisions): 말 하나 2000자, 전체 2만 자를 넘으면 가장 오래된 말부터 뺀다
 HISTORY_LINE_CHARS = 2000
@@ -184,7 +189,8 @@ ASK_PAST = "이미 지난 시각이구나. 날짜나 시각을 다시 알려 주
 def _say(value) -> str:
     """LLM이 쓴 사용자용 문장. 내부 값이 섞였으면 버린다."""
     v = value.strip() if isinstance(value, str) else ""
-    return "" if LEAK.search(v.replace("CCTV", "")) else v
+    leaked = LEAK.search(v) or any(w.lower() in INTERNAL_WORDS for w in re.findall(r"[A-Za-z]{2,}", v))
+    return "" if leaked else v
 
 
 def _when(value, now: datetime) -> str | None:
@@ -220,7 +226,7 @@ def _as_list(value) -> list:
 def llm_parse(
     llm: LLM, text: str, now: datetime, history: list[dict] = (), screen_note: str = ""
 ) -> ParseResult:
-    """LLM이 앞 대화·화면·지금 말로 요청을 해석한다. 형식이 틀리면 ValueError(호출 쪽이 규칙 해석을 씀)."""
+    """LLM이 앞 대화·화면·지금 말로 요청을 해석한다. 형식이 틀리면 ValueError(호출 쪽이 다시 말해 달라고 함)."""
     talk = _talk(history)
     parts = [f"[지금 시각: {now.astimezone(SEOUL).strftime('%Y-%m-%d %H:%M')} (서울)]"]
     if talk:
@@ -241,9 +247,21 @@ def _read(data: dict, text: str, context: str, now: datetime, mode: str) -> Pars
     # 장소 이름은 대화·화면에 실제로 나온 것만(지어낸 지명으로 검색하지 않게). 띄어쓰기 차이는 봐준다
     seen = (text + context).replace(" ", "")
 
+    confirm: list[str] = []
+
     def grounded(value) -> str | None:
         v = value.strip() if isinstance(value, str) else ""
-        return v if v and v.replace(" ", "") in seen else None
+        if not v or v.replace(" ", "") in seen:
+            return v or None
+        # 사용자가 쓴 말과 두 글자 넘게 겹치면 오타·줄임말을 고친 것으로 보고 맞는지 묻는다
+        # ("일출봉" -> 성산일출봉, "동문시정" -> 동문시장). 겹치지 않으면 지어낸 이름이라 버림
+        # shortcut: 겹친 글자 수로만 본다, 엉뚱한 곳을 물으면 사용자가 아니라고 하면 됨
+        said = text.replace(" ", "")
+        common = difflib.SequenceMatcher(None, said, v.replace(" ", "")).find_longest_match()
+        if common.size >= 2 and len(v) <= 30 and _say(v):  # noqa: PLR2004
+            confirm.append(v)
+            return v
+        return None
 
     def kinds(value) -> list[str]:
         words = [w.strip() for w in _as_list(value) if isinstance(w, str) and w.strip()]
@@ -319,4 +337,5 @@ def _read(data: dict, text: str, context: str, now: datetime, mode: str) -> Pars
         reference_time=now.isoformat(),
         parser=mode,
         reply=_say(data.get("reply")),
+        confirm=list(dict.fromkeys(confirm)),
     )

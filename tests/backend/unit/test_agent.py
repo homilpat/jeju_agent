@@ -13,7 +13,7 @@ import pytest
 from jeju_lifepath.agent.llm import MockLLM
 from jeju_lifepath.agent.models import Policy, ToolError
 from jeju_lifepath.agent.tools import Budget
-from jeju_lifepath.agent.orchestrator import Agent, Conflict, NotFound
+from jeju_lifepath.agent.orchestrator import Agent, Conflict, NeedInput, NotFound
 from jeju_lifepath.agent.parse import parse_rules
 from jeju_lifepath.api import store as store_module
 from jeju_lifepath.api.store import DraftOutdated, Store
@@ -388,13 +388,59 @@ def test_at18_llm_cannot_invent_places(world):
     assert tools_called(agent) == ["find_nearby_facilities"]  # 문장에 없는 '서울역'을 쓰지 않음
 
 
-def test_at19_llm_failure_falls_back_to_rules(world):
+def test_at19_llm_failure_asks_again(world):
     def broken(_t):
         raise ToolError("transient", "down")
 
     agent = Agent(world["store"], world["ctx"], llm=MockLLM(broken), clock=lambda: NOW)
     r = say(world, "근처 약국 어디야", loc=LOC, agent=agent)
-    assert r["status"] == "ok" and r["interpreter"] == "rules"
+    # 규칙 해석으로 넘기지 않고 다시 말해 달라고 한다
+    assert r["message"] == "잠깐 생각이 막혔구나, 다시 말해 주렴." and tools_called(agent) == []
+
+
+def test_llm_plain_english_kept_internal_words_dropped(world):
+    from jeju_lifepath.agent.llm import _say  # noqa: PLC0415
+
+    for ok in ("GS25 앞이란다", "KTX는 없단다", "CCTV 많은 길", "CU 근처란다"):
+        assert _say(ok) == ok
+    for bad in ("facility는 pharmacy", "place_query", '{"a": 1}', "SHORTEST로 할게", "night_pharmacy"):
+        assert _say(bad) == ""
+
+
+def test_llm_corrected_place_name_is_confirmed(world):
+    out = {"intent": "guide", "place_query": "성산일출봉"}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    r = say(world, "일출봉 설명해줘", agent=agent)
+    assert r["status"] == "needs_input" and r["message"] == "성산일출봉 말하는 거니?"
+    assert tools_called(agent) == []
+    r = say(world, "응, 맞아", agent=agent, conv=r["conversation_id"])  # 버튼 답
+    assert r["status"] != "needs_input"
+    assert "성산일출봉" in json.dumps(agent.last_trajectory, ensure_ascii=False)  # 고친 이름으로 찾음
+
+
+def test_llm_two_corrected_names_confirmed_one_by_one(world):
+    out = {"intent": "route", "location_text": "동문시장", "destination_text": "성산일출봉"}
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(lambda _t: json.dumps(out)), clock=lambda: NOW)
+    r = say(world, "동문시정에서 일출봉까지 걷는 길", agent=agent)
+    assert r["message"] == "동문시장 말하는 거니?"
+    r = say(world, "응, 맞아", agent=agent, conv=r["conversation_id"])
+    assert r["message"] == "성산일출봉 말하는 거니?" and tools_called(agent) == []
+
+
+def test_llm_failure_keeps_pending_question(world):
+    calls = []
+
+    def reply(_t):
+        calls.append(1)
+        if len(calls) == 2:
+            raise ToolError("timeout", "llm")
+        return json.dumps({"intent": "guide", "place_query": "성산일출봉"})
+
+    agent = Agent(world["store"], world["ctx"], llm=MockLLM(reply), clock=lambda: NOW)
+    conv = say(world, "일출봉 설명해줘", agent=agent)["conversation_id"]
+    assert say(world, "응 그거", agent=agent, conv=conv)["message"] == "잠깐 생각이 막혔구나, 다시 말해 주렴."
+    r = say(world, "응, 맞아", agent=agent, conv=conv)  # 앞 질문의 버튼 답이 아직 통한다
+    assert "성산일출봉" in json.dumps(agent.last_trajectory, ensure_ascii=False)
 
 
 # AT-20 ------------------------------------------------------------------
@@ -1296,15 +1342,16 @@ def test_llm_count_only_answer_keeps_themes(world):
     assert "themes" not in p.slot_sources and p.slots.theme_counts == {"빵집": 2}
 
 
-def test_llm_wrong_field_types_fall_back_to_rules(world):
+def test_llm_wrong_field_types_keep_rest(world):
     p, _ = _llm_parse(world, {"intent": "plan_create", "day_themes": 1, "ask": 1, "changes": 1},
                       "근처 약국 어디야")
     assert p.parser == "mock"  # 칸 형식이 틀려도 목록 칸은 무시하고 살림
     p, _ = _llm_parse(world, {"intent": "plan_create", "theme_counts": {"빵집": 2},
                               "themes": "빵집"}, "근처 약국 어디야")
     assert p.slots.themes == []
-    p, _ = _llm_parse(world, {"intent": "날아가기"}, "근처 약국 어디야")
-    assert p.parser == "rules" and p.intent == "guide"
+    with pytest.raises(NeedInput) as q:  # 모르는 의도: 규칙 해석 대신 다시 말해 달라고 함
+        _llm_parse(world, {"intent": "날아가기"}, "근처 약국 어디야")
+    assert q.value.questions == [{"text": "잠깐 생각이 막혔구나, 다시 말해 주렴."}]
 
 
 def test_llm_lowercase_field_names_not_shown(world):

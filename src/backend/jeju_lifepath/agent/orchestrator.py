@@ -40,11 +40,15 @@ MIN_VIEW_RADIUS_M = 300
 KAKAO_MAX_RADIUS_M = 20000  # 카카오 로컬 검색 반경 상한(API 규격)
 
 
+LLM_STUCK = "잠깐 생각이 막혔구나, 다시 말해 주렴."
+
+
 class NeedInput(Exception):  # noqa: N818 - 흐름 제어용(오류 아님)
-    def __init__(self, questions: list[dict], pending: dict | None = None):
+    def __init__(self, questions: list[dict], pending: dict | None = None, replies: list | None = None):
         super().__init__("needs_input")
         self.questions = questions
         self.pending = pending
+        self.replies = replies  # None이면 질문의 버튼 답으로 정함
 
 
 class Conflict(Exception):
@@ -289,7 +293,7 @@ class Agent:
         except NeedInput as q:
             state["pending"] = q.pending
             # 버튼으로 줄 수 있는 답: 이 말이 그대로 오면 해석과 상관없이 앞 질문의 답으로 본다
-            state["pending_replies"] = [
+            state["pending_replies"] = q.replies if q.replies is not None else [
                 o["reply"] for qq in q.questions for o in qq.get("options", [])
             ]
             resp = present.needs_input(
@@ -497,8 +501,13 @@ class Agent:
             try:
                 return llm_parse(self.llm, text, now, state.get("history", []), screen_note)
             except (ToolError, ValueError) as e:
-                log.info("llm parse fell back to rules: %s", type(e).__name__)
-        return parse_rules(text, now, has_trip)  # LLM이 없거나 실패했을 때만
+                # 규칙 해석으로 넘기면 엉뚱하게 알아듣는다. 모른다고 솔직히 말하고 다시 듣는다
+                log.info("llm parse failed: %s", type(e).__name__)
+                # 앞 질문에 답하던 중이면 그 질문과 버튼 답을 그대로 남겨 다시 답할 수 있게 한다
+                raise NeedInput(
+                    [{"text": LLM_STUCK}], state.get("pending"), state.get("pending_replies", [])
+                ) from None
+        return parse_rules(text, now, has_trip)  # LLM이 없을 때(개발·시험)와 버튼 답만
 
     def _merge_pending(self, parsed: ParseResult, text: str, state: dict) -> ParseResult:
         """앞 질문의 답이면 원래 요청을 이어간다(AT-01). 새 요청이면 앞 질문은 버린다."""
@@ -552,6 +561,8 @@ class Agent:
                 else [],
                 "requested_changes": changes,
                 "reference_time": parsed.reference_time,
+                # 앞에서 남은 확인 + 이번 답에서 새로 고친 이름(답에서 고친 이름도 묻는다)
+                "confirm": list(dict.fromkeys([*base.confirm, *parsed.confirm])),
             }
         )
 
@@ -559,6 +570,11 @@ class Agent:
     def _dispatch(self, p: ParseResult, ctx: dict) -> dict:
         if p.ambiguities:
             raise NeedInput([{"text": a} for a in p.ambiguities], p.model_dump(mode="json"))
+        if p.confirm:  # 고친 이름은 하나씩 묻는다(버튼 하나로 여러 곳을 승인하지 않게)
+            name, rest = p.confirm[0], p.confirm[1:]
+            ask = [{"text": f"{name} 말하는 거니?", "options": [{"label": "응, 맞아", "reply": "응, 맞아"}]}]
+            # 고친 이름은 이미 칸에 들어 있어서 "응, 맞아"면 남은 확인을 거쳐 그대로 이어간다
+            raise NeedInput(ask, p.model_copy(update={"confirm": rest}).model_dump(mode="json"))
         if p.intent == "unsupported" or (
             p.slots.transport in ("car", "bus", "taxi") and p.intent in ("route", "plan_create")
         ):
