@@ -93,16 +93,16 @@ def trip_body(w, trip_id):
 
 
 # AT-01 ------------------------------------------------------------------
-def test_at01_location_asked_then_request_resumes(world):
+def test_at01_no_gps_uses_airport_then_gps(world):
+    # 위치(GPS)를 안 켰으면 묻지 않고 제주공항 기준으로 찾고, 그렇다고 한 번 밝힌다(사용자 결정 2026-11-20)
     r = say(world, "근처 약국 어디야")
-    assert r["status"] == "needs_input"
-    assert r["questions"][0]["needs_location"]
-    assert tools_called(world["agent"]) == []
-    r2 = say(world, "지금 위치", conv=r["conversation_id"], loc=LOC)
+    assert r["status"] == "ok" and r["message"].startswith("제주공항")
+    assert any("제주공항을 기준으로" in w for w in r["warnings"])
+    r2 = say(world, "근처 약국 어디야", loc=LOC)  # 위치를 켜면 지금 위치 기준
     assert r2["status"] == "ok"
     assert [p["name"] for p in r2["places"]] == ["중앙약국"]
     assert any("영업시간" in m for m in r2["missing_data"])  # 영업 단정 없음
-    assert tools_called(world["agent"]) == ["find_nearby_facilities"]
+    assert not any("제주공항" in w for w in r2["warnings"])
 
 
 # AT-02 ------------------------------------------------------------------
@@ -773,16 +773,8 @@ def test_theme_without_count_gets_one(world):
     assert len(r["itinerary"]["stops"]) == 3
 
 
-def test_map_view_is_used_and_named(world):
+def test_named_place_beats_no_gps_fallback(world):
     view = {"center": dict(LOC), "south": 33.502, "west": 126.502, "north": 33.506, "east": 126.506}
-    r = world["agent"].handle_message(world["uid"], uuid.uuid4().hex, "근처 약국 어디야",
-                                      map_view=view)
-    assert r["status"] == "ok" and r["message"].startswith("지도 가운데")
-    r2 = world["agent"].handle_message(world["uid"], uuid.uuid4().hex,
-                                       "빵집이랑 카페 두 곳 들르고 돌아오는 코스 짜줘", map_view=view)
-    assert r2["status"] == "ok"
-    assert any("지도 가운데" in n for n in r2["itinerary"]["notes"])
-    assert trip_body(world, r2["trip_id"])[0]["agent"]["start_point"]
     # 직접 말한 지명이 지도보다 우선
     r3 = world["agent"].handle_message(world["uid"], uuid.uuid4().hex, "격자마을 근처 약국",
                                        map_view=view)
@@ -870,7 +862,7 @@ def test_resume_keeps_map_view(world):
     world["store"]._db.close()
     reopened = Store(world["path"])
     r = Agent(reopened, world["ctx"], clock=lambda: NOW).resume(world["uid"], mid, map_view=view)
-    assert r["status"] == "ok" and r["message"].startswith("지도 가운데")
+    assert r["status"] == "ok" and r["message"].startswith("제주공항")
 
 
 def test_planner_get_returns_version(tmp_path):

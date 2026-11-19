@@ -30,7 +30,6 @@ from jeju_lifepath.agent.services import AgentContext, build_tools
 from jeju_lifepath.data.barrier_free import name_key, place_ref
 from jeju_lifepath.agent.tools import Budget, BudgetExceeded, ToolRunner
 from jeju_lifepath.api.store import DraftOutdated, RunCancelled, Store, VersionConflict
-from jeju_lifepath.geo.geodesy import haversine_m
 from jeju_lifepath.routing.optimizer import SPEED_M_PER_MIN
 from jeju_lifepath.schemas import MobilityProfile, RoutePreference
 
@@ -39,7 +38,9 @@ log = logging.getLogger(__name__)
 
 # 지도를 아주 크게 확대했을 때도 이만큼은 찾는다(카카오 검색 최소 단위와 무관한 화면 기준값).
 # shortcut: 근거 없는 값, 확대 화면에서 결과가 너무 적으면 조정
-MIN_VIEW_RADIUS_M = 300
+# 위치(GPS)를 쓰지 않을 때의 기준점: 제주국제공항(사용자 결정 2026-11-20, 여행자가 가장 많이 시작하는 곳)
+JEJU_AIRPORT = {"lon": 126.4929, "lat": 33.5066, "label": "제주공항"}
+AIRPORT_NOTE = "위치를 켜지 않아서 제주공항을 기준으로 찾았단다. 위치 버튼을 누르면 지금 위치로 다시 찾아 줄게."
 KAKAO_MAX_RADIUS_M = 20000  # 카카오 로컬 검색 반경 상한(API 규격)
 
 
@@ -346,6 +347,8 @@ class Agent:
     def _close(self, ctx, resp, stage, state) -> dict:
         if self._quota_out():
             resp.setdefault("warnings", []).append(QUOTA_NOTE)
+        if ctx.get("airport_fallback") and resp.get("status") == "ok":
+            resp.setdefault("warnings", []).append(AIRPORT_NOTE)
         # 대화 기록: 새로고침 후 화면 복원과 LLM의 앞 대화(카카오 자료는 넣지 않음). 횟수 제한 없이
         # 보유기간(trace_retention_days)이 지나면 대화째 지운다
         state["history"] = [
@@ -673,6 +676,12 @@ class Agent:
                 q.pending, q.replies = None, []
                 raise
             filters["near"] = {"lon": at["lon"], "lat": at["lat"]}  # 좌표는 도구에만, LLM에는 안 보냄
+        else:
+            # 기준 위치를 말하지 않아도 다른 도구처럼 지금 위치(없으면 제주공항)로 거리를 매긴다.
+            # 거리가 없으면 LLM이 가까운 곳을 고를 근거가 없어 섬 반대편이 섞임. 거르지는 않고 순서·거리만
+            c = ctx["location"] or JEJU_AIRPORT
+            ctx["airport_fallback"] = ctx["location"] is None
+            filters["near"] = {"lon": c["lon"], "lat": c["lat"]}
         try:
             found = ctx["runner"].call("knowledge_graph", filters)["places"]
         except ToolError as e:
@@ -869,10 +878,8 @@ class Agent:
                 "lat": ctx["location"]["lat"],
                 "label": "지금 위치",
             }
-        if ctx.get("map_view"):  # 사용자가 보고 있는 지도 가운데(답에 "지도 가운데"라고 밝힌다)
-            c = ctx["map_view"]["center"]
-            return {"lon": c["lon"], "lat": c["lat"], "label": "지도 가운데"}
-        raise NeedInput([{"text": ask, "needs_location": True}], p.model_dump(mode="json"), missing=True)
+        ctx["airport_fallback"] = True  # 위치를 안 켰으면 제주공항 기준(답에 한 번 밝힘)
+        return dict(JEJU_AIRPORT)
 
     @staticmethod
     def _without(p: ParseResult, slot: str) -> dict:
@@ -927,12 +934,6 @@ class Agent:
         if query == BARRIER_FREE_THEME:
             return self._barrier_free_candidates(ctx, near), False
         radius = self.policy.search_radius_m
-        view = ctx.get("map_view")
-        if near.get("label") == "지도 가운데" and view:
-            # 지도에 보이는 범위(가운데에서 모서리까지)만큼 찾는다. 카카오 반경 상한 20km
-            corner = haversine_m(view["center"]["lon"], view["center"]["lat"], view["east"],
-                                 view["north"])
-            radius = int(min(max(corner, MIN_VIEW_RADIUS_M), KAKAO_MAX_RADIUS_M))
         args = {
             "query": query,
             "near": {"lon": near["lon"], "lat": near["lat"]},
@@ -1347,7 +1348,7 @@ class Agent:
                 # 지금 위치에서 시작한 일정만: 고칠 때 같은 출발·복귀점을 쓰려고 약 10m 단위로 저장
                 # (사용자 자신의 위치, 카카오 자료 아님. 여행을 지우면 함께 지워짐)
                 "start_point": None
-                if s.location_text or start.get("label") not in ("지금 위치", "지도 가운데")
+                if s.location_text or start.get("label") not in ("지금 위치", "제주공항")
                 else {"lon": round(start["lon"], 4), "lat": round(start["lat"], 4)},
                 "destination_text": None if s.round_trip else s.destination_text,
                 "round_trip": s.round_trip,

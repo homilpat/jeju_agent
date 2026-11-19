@@ -108,6 +108,14 @@ def test_kg_distance_uses_current_location_and_is_budgeted(world):
     assert r["places"][0]["name"] == "격자공원" and "약 " in r["places"][0]["detail"]
 
 
+def test_kg_ranks_by_current_location_even_if_llm_gives_none(world):
+    # LLM이 위치를 넘기지 않아도 지금 위치 기준 거리가 관찰에 들어가야 가까운 곳을 고를 수 있다
+    llm, seen = script(call("knowledge_graph", name_contains=["공원"]), {"content": ""})
+    r = say(world, "휠체어로 갈 만한 공원 추천", loc=LOC, agent=agent_with(world, llm))
+    assert "약 " in r["places"][0]["detail"]
+    assert '"distance_m": null' not in json.dumps(seen, ensure_ascii=False)
+
+
 def test_kg_location_name_not_in_talk_is_confirmed(world):
     llm, _ = script(call("knowledge_graph", name_contains=["공원"], location_text="서울역"))
     r = say(world, "공원 추천", agent=agent_with(world, llm))

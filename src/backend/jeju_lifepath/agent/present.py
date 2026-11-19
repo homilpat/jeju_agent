@@ -897,7 +897,7 @@ def itinerary(
     # 이 일정에만 해당하는 말만 붙인다. 영업시간 미확인·머무는 시간 빠짐·순서가 최선이라 장담 못 함 같은
     # 모든 일정에 같은 말은 시작 화면 안내로 한 번만(답마다 되풀이하면 정작 중요한 말이 묻힘)
     notes = []
-    if ctx.get("start_label") in ("지금 위치", "지도 가운데"):
+    if ctx.get("start_label") == "지금 위치":
         notes.append(f"출발점은 {ctx['start_label']}로 잡았단다. 다른 곳에서 출발하면 말해 주렴.")
     missing = []
     if "leg_unknown" in check["warnings"] or "unlocated" in ctx["observations"]:
