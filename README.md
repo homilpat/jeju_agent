@@ -67,11 +67,19 @@ uvicorn jeju_lifepath.api.app:app --port 8000
 
 ## 환경변수 (`.env`)
 
+> **카카오 키 2개는 직접 발급해야 해요(무료).** 대회 규칙상 데이터·지도 API 키는 제출물에 넣지 않아요. 제출 ZIP의 `.env`에는 평가용 LLM 키만 있어요.
+> 1. https://developers.kakao.com 로그인 → **내 애플리케이션 → 애플리케이션 추가하기**
+> 2. 앱 → **앱 키**에서 REST API 키·JavaScript 키를 복사해 `.env`의 `KAKAO_REST_API_KEY`, `KAKAO_JS_KEY`에 넣기
+> 3. 앱 → **플랫폼 → Web**에 `http://127.0.0.1:8000` 등록(지도용)
+> 4. 앱 → **카카오맵 → 사용 설정 → 상태 ON**(꺼져 있으면 지도·장소 검색이 거절됨. [카카오맵 API 공통 가이드](https://developers.kakao.com/docs/latest/ko/kakaomap/common))
+> 5. 연결 확인: `python scripts/check_api_keys.py`
+
+
 | 이름 | 쓰임 | 받는 곳 | 없으면 |
 |---|---|---|---|
 | `LLM_API_KEY` | Agent의 LLM(Meta Model API, muse-spark-1.3, OpenAI 호환) | 제출물의 평가용 키(사용 한도 설정, 평가 후 폐기) | 규칙 해석 제한 모드 |
 | `LLM_DAILY_BUDGET_USD` | LLM 하루 요금 상한(달러, 실제 토큰으로 계산). 평가용은 5 | 제출물의 `.env`에 들어 있음 | 상한 없음 |
-| `KAKAO_REST_API_KEY` | 장소·주소 검색(서버) | [카카오 디벨로퍼스](https://developers.kakao.com/) 앱 → REST API 키 | 장소 검색 기능 안내 문구로 끝남 |
+| `KAKAO_REST_API_KEY` | 장소·주소 검색, 화장실·심야약국·수유실·응급실·올레 시작점의 주소 → 위치(서버) | [카카오 디벨로퍼스](https://developers.kakao.com/) 앱 → REST API 키 | **장소 이름 길찾기, 근처 화장실·약국·수유실·응급실, 올레, 일정이 안 됨**(와이파이·무장애 여행지는 동작) |
 | `KAKAO_JS_KEY` | 화면 지도 | 같은 앱의 JavaScript 키(플랫폼에 `http://127.0.0.1:8000` 등록) | 지도가 안 보임 |
 | `SAFEMAP_API_KEY` | 범죄주의구간 지도 겹치기, 경찰관서 자료 받기 | [생활안전지도 오픈API](https://www.safemap.go.kr/) | 겹쳐 보기만 꺼짐 |
 | `DATA_GO_KR_API_KEY` | 사고 다발지역 자료 받기(스크립트) | [공공데이터포털](https://www.data.go.kr/) 일반 인증키 | 안전환경 경로의 사고 지표 없음 |
