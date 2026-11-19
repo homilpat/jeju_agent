@@ -835,6 +835,15 @@ def nothing_fits(ctx, p, obs, version) -> dict:
     return _from(ctx, "infeasible", msg, version)
 
 
+def too_far_question(walk_min: int) -> dict:
+    """돌아올 시각 없이 걷기만 하루를 넘는 일정: 숫자는 계산 결과 그대로, 고르는 건 사용자."""
+    hours = round(walk_min / 60)
+    return {"text": f"고른 곳들이 멀어서 걷는 시간만 {hours}시간쯤 된단다. 걸어서 하루에 다니기는 어렵겠구나. "
+                    "한 곳만 들를까, 아니면 조건을 줄여서 가까운 곳으로 찾아볼까?",
+            "options": [{"label": "한 곳만 들를게", "reply": "한 곳만 들를게"},
+                        {"label": "가까운 곳으로 찾아줘", "reply": "조건을 줄여서 가까운 곳으로 찾아줘"}]}
+
+
 def validation_failed(ctx, p, check, version) -> dict:
     if "leg_unknown_with_deadline" in check.get("errors", []):
         return _from(ctx, "infeasible",

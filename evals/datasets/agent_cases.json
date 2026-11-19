@@ -2,21 +2,17 @@
   "_note": "합성 시나리오(실제 매장·인물 사실 아님). 세계: tests/backend/fixtures/agent_world.py. split=dev는 개발 중 사용, holdout은 결과를 보고 고치지 않는 보류 케이스.",
   "cases": [
     {
-      "id": "A01-nearby-pharmacy-ask-location",
+      "id": "A01-nearby-pharmacy-no-gps-airport",
       "split": "dev",
       "turns": [
         {
           "text": "근처 약국 어디야"
-        },
-        {
-          "text": "지금 위치",
-          "location": "center"
         }
       ],
       "expect": {
         "intent": "guide",
         "status": "ok",
-        "first_status": "needs_input",
+        "first_status": "ok",
         "required_tools": [
           "find_nearby_facilities"
         ],

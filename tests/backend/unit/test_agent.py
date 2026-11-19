@@ -1859,3 +1859,12 @@ def test_time_equal_to_now_means_leaving_now(world):
     p, _ = _llm_parse(world, {"intent": "plan_create", "themes": ["빵집"],
                               "depart_at": NOW.strftime("%Y-%m-%dT%H:%M:00+09:00")}, "빵집 코스")
     assert p.slots.depart_at is None and p.ambiguities == []
+
+
+def test_plan_longer_than_a_day_of_walking_asks_instead(world):
+    # 돌아올 시각 없이 걷기만 하루(정책 값)를 넘으면 일정을 내놓지 않고 줄일지 묻는다
+    ctx = make_context(policy=Policy.load(max_day_walk_minutes=1))
+    r = say(world, PLAN, agent=Agent(world["store"], ctx, clock=lambda: NOW))
+    assert r["status"] == "needs_input" and not r.get("itinerary")
+    assert "하루에 다니기는 어렵겠구나" in r["questions"][0]["text"]
+    assert [o["label"] for o in r["questions"][0]["options"]] == ["한 곳만 들를게", "가까운 곳으로 찾아줘"]

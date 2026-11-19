@@ -117,6 +117,8 @@ class Policy:
     llm: dict = field(default_factory=dict)
     # LLM 중심 Agent 루프(도구 호출·관찰·재계획). 끄면 한 번 해석 + 의도별 처리(제한 모드)
     agent_loop: bool = False
+    # 돌아올 시각 없이 걷기만 이 분을 넘는 일정은 내놓지 않고 묻는다
+    max_day_walk_minutes: int = 480
     max_loop_steps: int = 6
 
     @classmethod

@@ -1285,6 +1285,11 @@ class Agent:
             return present.nothing_fits(ctx, p, obs, self.policy.version)
         stops = [{**c, "fixed": False, "completed": False} for c in chosen]
         leg_list = legs(start, end, stops, dist, m_per_min)
+        walk_min = sum(x["minutes"] or 0 for x in leg_list)
+        if budget_min is None and walk_min > self.policy.max_day_walk_minutes:
+            # 돌아올 시각을 말하지 않았는데 걷기만 하루를 넘는 일정(예: 조건에 맞는 곳이 섬 반대편)은
+            # 그대로 내놓지 않고 사실만 알려 고르게 한다. 답은 LLM이 앞 대화와 함께 이어받는다
+            raise NeedInput([present.too_far_question(walk_min)], None, replies=[])
         check = validate(
             stops,
             leg_list,

@@ -15,6 +15,8 @@
   "search_radius_m": 2000,
   "widened_radius_m": 5000,
   "max_stops": 6,
+  "_max_day_walk_note": "돌아올 시각 없이 걷기만 이 분을 넘는 일정은 그대로 내놓지 않고 묻는다(하루 걷기 8시간, 2026-11-20 임의 기준)",
+  "max_day_walk_minutes": 480,
   "trace_retention_days": 7,
   "llm": {
     "base_url": "https://api.meta.ai/v1",
