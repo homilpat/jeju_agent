@@ -529,7 +529,7 @@ class Agent:
                                                 f"[사용자가 보고 있는 화면: {note}]\n{text}"})
         context = _talk(talk) + note  # 장소 이름 확인(대화·화면에 나온 이름인지)
         draft = None
-        shown_parse = None
+        shown_parse, nudged = None, False
         for _ in range(self.policy.max_loop_steps):
             ctx["runner"].check()  # 취소·시간 예산(도구와 같은 기준)
             budget.llm_calls += 1
@@ -540,6 +540,26 @@ class Agent:
                 raise NeedInput([{"text": LLM_STUCK}], state.get("pending"),
                                 state.get("pending_replies", [])) from None
             calls = msg.get("tool_calls") or []
+            reply = next((c for c in calls if (c.get("function") or {}).get("name") == "reply"), None)
+            if reply is not None:  # 그냥 답하기도 도구로: 이번 말의 끝 행동이 늘 명시된다
+                try:
+                    said = json.loads(reply["function"].get("arguments") or "{}").get("text")
+                except (ValueError, AttributeError):
+                    said = None
+                for c in calls:  # 같은 걸음에 부른 다른 도구는 실행하고 이 답으로 끝낸다
+                    if c is not reply:
+                        _obs, shown = self._loop_tool(c.get("function") or {}, text, context, now, ctx)
+                        if shown is not None:
+                            draft, shown_parse = shown, ctx["parse"]
+                msg, calls = {"content": said}, []
+            elif not calls and not nudged and draft is None and not ctx["runner"].trajectory:
+                # 행동을 고르지 않고 글로만 끝내면 한 번 되묻는다(못 하는 요청이 자유 문장 거절로 흩어지지 않게).
+                # API가 도구 호출 강제(tool_choice=required)를 지원하지 않아서 Harness가 대신 한다
+                nudged = True
+                msgs.append({"role": "assistant", "content": msg.get("content") or ""})
+                msgs.append({"role": "user", "content": "[도우미 규칙] 답을 끝내려면 reply, 못 하는 요청이면 cannot_do, "
+                                                        "물어야 하면 ask_user 중 하나를 불러라."})
+                continue
             if not calls and ctx.get("pending_missing"):  # 앞 화면보다 아직 못 푼 질문이 먼저
                 raise ctx["pending_missing"]  # 빠진 정보를 채우지 못함: 원래 질문으로 사용자에게
             if not calls:

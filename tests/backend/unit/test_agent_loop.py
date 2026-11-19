@@ -155,3 +155,16 @@ def test_kg_location_question_answer_goes_back_to_llm(world):
     llm2, seen = script({"content": "알겠단다"})
     say(world, "응, 맞아", agent=agent_with(world, llm2), conv=r["conversation_id"])
     assert seen  # 버튼 답도 루프(LLM)로 가서 원래 조건으로 다시 찾게 한다
+
+
+def test_plain_text_end_is_nudged_once_to_explicit_action(world):
+    llm, seen = script({"content": "택시 길은 못 알려준단다"},
+                       call("cannot_do", unsupported_features=["택시 경로"], transport="taxi"), {"content": ""})
+    r = say(world, "택시로 격자마을", agent=agent_with(world, llm))
+    assert r["status"] == "unsupported" and "도우미 규칙" in json.dumps(seen[1], ensure_ascii=False)
+
+
+def test_reply_tool_is_a_plain_answer(world):
+    llm, seen = script(call("reply", text="반갑단다. 걷는 길을 도와줄게."))
+    r = say(world, "안녕", agent=agent_with(world, llm))
+    assert r["message"] == "반갑단다. 걷는 길을 도와줄게." and len(seen) == 1

@@ -79,6 +79,8 @@ TOOLS = [
      "할 수 없는 요청을 정중히 거절(차·버스·택시 경로, 예약·결제, 메뉴·가격 등). 요청 일부만 못 하면 쓰지 말고 할 수 있는 도구를 쓴다",
      _obj({"unsupported_features": {"type": "array", "items": S, "description": "못 하는 일(짧은 우리말)"},
            "transport": {"type": "string", "enum": ["car", "bus", "taxi"]}}, ("unsupported_features",))),
+    ("reply", None, "도구가 필요 없는 답(인사·도움말·설명). 답을 끝낼 때 쓴다",
+     _obj({"text": {**S, "description": "제주 할망 말투 한두 문장"}}, ("text",))),
     ("ask_user", None, "꼭 필요한 정보가 없을 때 사용자에게 묻기(버튼 보기 선택)",
      _obj({"question": S, "options": {"type": "array", "items": S}}, ("question",))),
 ]
@@ -106,6 +108,7 @@ LOOP_PROMPT = f"""너는 제주 걷기 여행 도우미(설문대할망)다. 사
 - 장소 이름은 대화·화면에 나온 것만 쓴다(오타·줄임말은 바로잡아도 됨). 시각은 [지금 시각] 기준.
 - 장소 종류 예: {", ".join(dict.fromkeys(THEMES.values()))}. "자연"은 {", ".join(THEME_GROUPS["자연"])}.
 - 시설 낱말 예: {", ".join(FACILITIES)}.
+- 한 번의 답은 반드시 행동 하나로 끝낸다: 화면 도구, reply(그냥 답), cannot_do(못 하는 요청), ask_user(묻기).
 - 마지막 답은 제주 할망처럼 다정한 반말 한두 문장. 화면 도구를 썼으면 화면에 이미 나온 내용을 되풀이하지 말고
   덧붙일 말만(없으면 빈 답). 영어 코드·괄호·기호·날씨 같은 확인하지 않은 사실은 쓰지 않는다."""
 
